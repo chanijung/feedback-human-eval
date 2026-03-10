@@ -429,7 +429,7 @@ def _clear_user_state() -> None:
     st.session_state.units_nav = 0
     st.session_state._loaded_for_annotator = ""
     for key in list(st.session_state.keys()):
-        if key.startswith("draft_"):
+        if key.startswith("draft_") or key.startswith("rank_"):
             del st.session_state[key]
 
 
@@ -623,6 +623,9 @@ with tab1:
     draft_key = f"draft_{paper_id1}"
     if draft_key not in st.session_state:
         st.session_state[draft_key] = {m: existing_model_ranks.get(m) for m in shuffled}
+        # Sync widget state keys so Streamlit doesn't use stale values from a previous session
+        for _lbl, _model in label_to_model.items():
+            st.session_state[f"rank_{paper_id1}_{_lbl}"] = existing_model_ranks.get(_model)
 
     rank_cols = st.columns(len(shuffled))
     assigned_ranks: dict[str, int] = {}
