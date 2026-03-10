@@ -757,10 +757,9 @@ with tab2:
     st.markdown("##### 1. Validity")
     st.caption("Do you agree that this feedback is a valid issue/question?")
 
-    _validity_opts = ["agree", "partially agree", "rebut"]
+    _validity_opts = ["agree", "rebut"]
     _validity_desc = {
         "agree": "You agree the point is valid.",
-        "partially agree": "You partially agree with the feedback.",
         "rebut": "You're willing to dispute the premise, deny the issue, or argue the reviewer is mistaken.",
     }
     _cur_validity = existing2.get("validity")
