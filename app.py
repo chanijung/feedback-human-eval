@@ -760,7 +760,7 @@ with tab2:
     _validity_opts = ["agree", "disagree"]
     _validity_desc = {
         "agree": "You agree the point is valid.",
-        "rebut": "You disagre with the premise or issue, or you think the reviewer is mistaken.",
+        "disagree": "You disagree with the premise or issue, or you think the reviewer is mistaken.",
     }
     _cur_validity = existing2.get("validity")
     _validity_idx = _validity_opts.index(_cur_validity) if _cur_validity in _validity_opts else None
