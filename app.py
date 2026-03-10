@@ -474,14 +474,14 @@ if not st.session_state.sheets_loaded and _get_gc() is not None:
     st.session_state.unit_annots.update(loaded_u)
     # Jump to first unannotated unit
     paper_ids_done = set(st.session_state.rankings.keys())
-    for i, row in assigned_sets.iterrows():
+    for pos, (_, row) in enumerate(assigned_sets.iterrows()):
         if str(row["paper_id"]) not in paper_ids_done:
-            st.session_state.sets_nav = i
+            st.session_state.sets_nav = pos
             break
-    for i, row in assigned_units.iterrows():
+    for pos, (_, row) in enumerate(assigned_units.iterrows()):
         key = (str(row["paper_id"]), str(row["feedback_source"]), str(row["feedback_unit"]).strip())
         if key not in st.session_state.unit_annots:
-            st.session_state.units_nav = i
+            st.session_state.units_nav = pos
             break
     st.session_state.sheets_loaded = True
     st.session_state._loaded_for_annotator = annotator
@@ -734,10 +734,10 @@ with tab2:
     jump_c, goto_lbl, goto_num, goto_btn, _ = st.columns([2, 1, 1, 1, 3])
     with jump_c:
         if st.button("⏭ Jump to first unannotated", type="primary", key="jump_unannotated"):
-            for i, row in assigned_units.iterrows():
+            for pos, (_, row) in enumerate(assigned_units.iterrows()):
                 k = (str(row["paper_id"]), str(row["feedback_source"]), str(row["feedback_unit"]).strip())
                 if k not in st.session_state.unit_annots:
-                    st.session_state.units_nav = int(i)
+                    st.session_state.units_nav = pos
                     st.rerun()
     with goto_lbl:
         st.markdown("<div style='padding-top:0.45rem;font-size:0.9rem;'>Go to</div>", unsafe_allow_html=True)
