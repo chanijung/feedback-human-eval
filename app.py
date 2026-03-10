@@ -826,7 +826,7 @@ with tab2:
     st.markdown("##### 3. Helpfulness")
     st.caption("Rate the overall value of this feedback to the authors on a 5-point scale.")
 
-    _help_opts = [1, 2, 3, 4, 5]
+    _help_opts = [5, 4, 3, 2, 1]
     _help_fmt = {
         1: "1 — Not helpful at all",
         2: "2 — Slightly helpful",
@@ -835,7 +835,7 @@ with tab2:
         5: "5 — Very helpful",
     }
     _cur_help = existing2.get("helpfulness")
-    _help_idx = (_cur_help - 1) if (_cur_help is not None and 1 <= _cur_help <= 5) else None
+    _help_idx = (5 - _cur_help) if (_cur_help is not None and 1 <= _cur_help <= 5) else None
 
     helpfulness = st.radio(
         "Helpfulness",
