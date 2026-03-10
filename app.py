@@ -749,7 +749,6 @@ with tab2:
 
     st.markdown(f"""
     <div class="unit-card">
-      <div class="unit-source-badge">Source: {html.escape(source2)}</div>
       <div class="unit-text">{html.escape(unit_text2)}</div>
     </div>
     """, unsafe_allow_html=True)
