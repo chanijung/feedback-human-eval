@@ -399,6 +399,7 @@ def _init():
         "sheets_loaded": False,
         "last_save_toast": None,  # {"ok": bool, "msg": str, "task": "ranking"|"unit"}
         "switch_to_tab2": False,  # trigger JS tab switch after rerun
+        "_loaded_for_annotator": "",  # tracks which annotator the sheets data belongs to
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -406,6 +407,26 @@ def _init():
 
 
 _init()
+
+
+def _clear_user_state() -> None:
+    """Clear all per-annotator session state so a fresh user starts clean."""
+    st.session_state.sheets_loaded = False
+    st.session_state.rankings = {}
+    st.session_state.unit_annots = {}
+    st.session_state.sets_nav = 0
+    st.session_state.units_nav = 0
+    st.session_state._loaded_for_annotator = ""
+    for key in list(st.session_state.keys()):
+        if key.startswith("draft_"):
+            del st.session_state[key]
+
+
+# If the annotator changed (e.g. via URL) without going through the logout flow,
+# clear any stale annotation data from the previous user.
+_current = st.session_state.annotator
+if _current and st.session_state.get("_loaded_for_annotator", "") not in ("", _current):
+    _clear_user_state()
 
 # ── LOGIN GATE ────────────────────────────────────────────────────────────────
 if not st.session_state.annotator:
@@ -452,6 +473,7 @@ if not st.session_state.sheets_loaded and _get_gc() is not None:
             st.session_state.units_nav = i
             break
     st.session_state.sheets_loaded = True
+    st.session_state._loaded_for_annotator = annotator
 
 # ── PROGRESS COUNTS ───────────────────────────────────────────────────────────
 n_sets = len(assigned_sets)
@@ -482,8 +504,8 @@ with col_bar:
     """, unsafe_allow_html=True)
 with col_change:
     if st.button("Change name"):
+        _clear_user_state()
         st.session_state.annotator = ""
-        st.session_state.sheets_loaded = False
         st.query_params.pop("annotator", None)
         st.rerun()
 
