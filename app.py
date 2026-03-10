@@ -132,10 +132,21 @@ button[kind="primary"]:hover,
 .stRadio > div { gap: 0.4rem !important; }
 .stRadio label { font-family: 'IBM Plex Sans', sans-serif !important; font-size: 0.92rem !important; }
 
-/* Tabs */
-.stTabs [data-baseweb="tab-list"] { gap: 4px; }
+/* Tabs — Task 1 / Task 2: larger, bolder */
+.stTabs [data-baseweb="tab-list"] { gap: 6px; }
 .stTabs [data-baseweb="tab"] {
-    font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem; padding: 0.5rem 1.2rem;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 1.1rem !important;
+    font-weight: 800 !important;
+    padding: 0.7rem 1.6rem !important;
+}
+.stTabs [data-baseweb="tab"] button,
+.stTabs [data-baseweb="tab"] p,
+.stTabs [data-baseweb="tab"] span,
+button[data-baseweb="tab"] {
+    font-size: 1.1rem !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.01em !important;
 }
 
 /* Selectbox label */
