@@ -14,7 +14,7 @@ from google.oauth2 import service_account
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Feedback Human Evaluator",
+    page_title="Feedback Human Evaluation",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -471,7 +471,7 @@ col_bar, col_change = st.columns([8, 1])
 with col_bar:
     st.markdown(f"""
     <div class="top-bar">
-      <h1>⬡ Feedback Human Evaluator</h1>
+      <h1>⬡ Feedback Human Evaluation</h1>
       <span class="progress-info">
         <span style="color:var(--accent); margin-right:1rem;">👤 {html.escape(annotator)}</span>
         Task 1: {n_sets_done}/{n_sets}
