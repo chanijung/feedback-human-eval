@@ -1,0 +1,109 @@
+paper_id,title,annotators,feedback_set-GPT-5_2,feedback_set-Gemini-3-flash,feedback_set-Llama3_1-8b-Instruct,feedback_set-Olmo-3-7B-Instruct,feedback_set-Qwen3-8b
+coginterp,How Do LLMs Ask Questions? A Pragmatic Comparison with Human Question-Asking,"hyunwoo, jimin, xuhui, chani","1. Clarify the central claim of the paper and explicitly define what is meant by “human-like.” Distinguish between describing differences from humans and normatively arguing why matching human distributions improves interaction quality, specifying for whom and in what settings.
+2. Strengthen the motivation for choosing the r/NoStupidQuestions subreddit by providing evidence or argument that it is representative of the real-world social interactions of interest, and add a limitations note or justification regarding its specific norms and characteristics.
+3. Define the unit of analysis clearly and formally early in the Methods section, specifying what constitutes a response for LLMs, what counts as a human response, and exactly what is being compared in each test.
+4. Address the selection bias caused by balancing posts with and without question comments, which alters the natural prevalence of question-asking and may distort the human baseline distribution.
+5. Improve question identification by not relying solely on question marks, as humans often ask questions without them and LLMs typically include them, which may bias type distributions.
+6. Control for comment length and conversational context differences between humans and LLMs, since humans reply in threaded conversations but LLMs respond only to the post, which can affect the frequency of repair initiators, confirmations, and challenges.
+7. Report stratification of question types by topic and post type, as differences in topic distributions between models and humans may confound comparisons.
+8. Avoid using the o3 model both as an annotator and as an evaluated model family to prevent correlated biases that may advantage or disadvantage models closer to o3’s style.
+9. Expand the human-annotation set beyond 136 questions to improve reliability, and report per-class reliability metrics such as confusion matrices, per-class F1 scores, and inter-annotator agreement between two humans if possible.
+10. Clarify how multi-question comments are handled in distribution comparisons by reporting both per-question (unweighted) and per-response (weighted) distributions and explaining the interpretation of each.
+11. Strengthen the validity of the taxonomy by explaining how conversation-analytic categories designed for spoken sequences map to asynchronous Reddit text, providing Reddit-specific examples for each category, and discussing ambiguous cases.
+12. Make generation settings explicit and consistent by providing a table detailing decoding parameters, max length, use of safety/system messages, and number of samples per post, and consider sampling multiple generations per post to reduce variance.
+13. Control for differences in prompt length and instruction strength, as longer and more specific prompts like the Taxonomy prompt may drive distribution shifts compared to shorter prompts.
+14. Separate metrics for question frequency and question type diversity by adding measures such as overall question frequency, entropy or effective number of types, per-post probability of any question, and mean questions per response.
+15. Justify the use of L2 distance for comparing distributions and add complementary divergence metrics such as Jensen–Shannon divergence or KL divergence with smoothing to confirm qualitative conclusions.
+16. Be cautious with chi-squared tests due to assumptions and rare classes; consider using rare-event tests like Fisher’s exact test or logistic mixed models, and report confidence intervals for rare proportions to avoid overclaiming.
+17. Use hierarchical or mixed-effects models to account for post-level dependence, including fixed effects for model, prompt, and training stage, and random intercepts for posts, to obtain cleaner effect estimates and interactions.
+18. Report effect sizes such as absolute percentage-point differences, odds ratios for key types, and confidence intervals, not only statistical significance, to provide a clearer understanding of the magnitude of differences.
+19. Disentangle the effects of alignment tuning reducing questions from instruction-following changing conversational goals by measuring answer completeness or helpfulness and assessing whether questions are necessary given post ambiguity.
+20. Operationalize rhetorical questions by subcoding them into categories such as assertion/sarcasm, hypophora, and reflection prompt, and quantify these subtypes on a sample to better understand their functions.
+21. Verify that the rarity of “Other/Challenge” categories in LLM outputs is not due to annotation artifacts by ensuring consistency with additional human labeling and providing examples of LLM outputs that should count as challenges but do not.
+22. Clarify the added value of HypotheSAEs compared to simpler baselines such as logistic regression on n-grams, length controls, and style markers, by including a short comparison or explanation of the unique insights provided by SAEs.
+23. Control explicitly for length in the human-vs-LLM classifier by performing length-matched subset analyses or including length as a covariate to ensure that top features are not merely proxies for brevity.
+24. Avoid over-interpreting features related to sensitive topics such as race/ethnicity, women’s behavior, and mental health by clarifying that these are correlational and may reflect subreddit topic distribution or moderation norms rather than inherent human-like characteristics.
+25. Add a compact experimental matrix figure or table listing models, training stages, prompts, number of posts, and decoding parameters to improve reproducibility.
+26. Tighten and standardize terminology throughout the paper, ensuring consistent naming such as GPT-4o instead of GPT-40 and consistent capitalization of model names.
+27. Improve figure interpretability by adding numeric labels or tables with exact proportions, fixing incomplete captions, and plotting human distributions as lines with model bars grouped by prompt for easier comparison.
+28. Conduct necessity-based evaluation by sampling posts with missing information or ambiguity and having humans judge whether a follow-up question is warranted, then compare models on probability of asking questions when warranted and appropriateness of question type.
+29. Implement an interactive follow-up setting with at least two turns, where the model asks a question and then receives a plausible answer, to evaluate whether question-asking improves outcomes and connects pragmatics to utility.
+30. Perform cross-domain validation by replicating analyses on a second community with different norms to demonstrate robustness of findings.
+31. Add an explicit Limitations & Ethics section covering Reddit representativeness and norms, annotation model bias, privacy considerations, inability to capture conversational adjacency pairs fully, and potential harms of more challenging questions in safety-sensitive contexts.","1. The paper treats Reddit users from r/NoStupidQuestions as the ground truth for human question-asking, but Reddit has a specific subculture, demographic bias, and platform-specific pragmatics that may affect the results.
+2. The paper implies that a smaller L2 distance between human and LLM distributions is a success, but it should clarify whether the goal is for LLMs to mimic humans exactly or to be better or more polite than average humans.
+3. LLMs produce 'Other/Challenge' questions at a very low rate (<0.04%), indicating a significant pragmatic failure that should be analyzed qualitatively.
+4. The paper uses OpenAI's o3 model for automatic annotation with a Cohen's Kappa of 0.78, which is substantial but not perfect, and this raises concerns about annotation reliability and potential self-labeling bias.
+5. The alignment tuning section (Section 4) presents findings as model-specific and inconsistent without exploring underlying patterns or hypotheses.
+6. The qualitative analysis notes that LLMs use templated question patterns, but this templating is not quantified.
+7. The HypotheSAE analysis reveals that LLMs focus on emotional states while humans focus on concise 'why' questions, suggesting LLMs over-perform a 'therapist/assistant' role.
+8. The captions for Figures 2 and 3 do not explain the error bars, which are based on cluster bootstrap.
+9. Appendix C includes an example of a human response asking a 'meta-question' (the inverse), which is a form of creative questioning that LLMs lack but is not explicitly pointed out in the text.
+10. The paper does not cite work on sycophancy in LLMs, which could explain the lack of 'Challenge' questions.","1. The paper's abstract and introduction are too broad, making it difficult to identify the specific research question being investigated. The authors should clarify the exact research question(s) the paper aims to answer.
+2. The literature review section is somewhat disjointed and does not clearly connect existing research to the paper's contributions. The authors should explicitly discuss how their findings build upon or challenge prior work.
+3. The explanation of the taxonomy of social actions used to classify questions is insufficiently detailed and may be inaccessible to readers without a background in pragmatics. The authors should provide a more detailed and accessible explanation.
+4. Some sentences and paragraphs in the paper are convoluted or unclear, reducing readability. The authors should revise the text to improve clarity and consistency.
+5. The discussion of the implications of the findings regarding differences between human and LLM question-asking behavior is insufficiently nuanced and detailed. The authors should provide a more thorough and nuanced discussion of these implications.
+6. The paper briefly mentions some limitations such as using a single dataset and relying on human annotations, but lacks an explicit and thorough discussion of these limitations and their impact on the findings.
+7. The analysis of the results is not sufficiently detailed or in-depth. The authors should more closely examine patterns and trends in the data and discuss their potential implications.
+8. The discussion of the broader implications of the findings on differences between human and LLM question-asking behavior could be more detailed and nuanced.
+9. Some terms used in the paper are not clearly defined or consistently used throughout the text. The authors should revise the manuscript to ensure clear and consistent terminology.
+10. There are formatting issues and inconsistencies in the paper's style. The authors should revise the text to ensure it meets the journal's formatting and style guidelines.
+11. The appendix lacks detailed explanations of the data collection process, including methods used to collect and annotate the data.
+12. The appendix lacks detailed information about the models used in the study, including their architectures and training procedures.
+13. The appendix could provide a more detailed analysis of the results, including an in-depth examination of patterns and trends in the data.","1. The paper's title is somewhat long and vague about the social context of the study; it should be more precise and explicitly mention the social aspect of question-asking.
+2. The abstract should emphasize the contrast between LLM and human social functions of questions, highlighting that LLMs under-use and misalign with diverse social question functions in real-world settings.
+3. The rationale for dataset sampling and model selection should be clarified, including why the Reddit subforum was chosen and the reasons for selecting six LLM families with diverse characteristics.
+4. The 'Taxonomy' prompt should be explicitly described as guiding models toward social-function categories rather than merely forcing them.
+5. The discussion of prompt-induced biases would benefit from including specific examples of how each prompt affected model outputs, such as overuse of rhetorical questions under the Imitate prompt.
+6. To improve reproducibility, provide full prompt templates in a copy-paste ready and clearly formatted manner, and clarify any API rate limits or restrictions encountered during experiments.
+7. The paper should discuss the reliability of human question annotations and the representativeness of the Reddit sample for typical human question-asking behavior.
+8. The results on how alignment affects different model families should be clarified with visual summaries such as bar plots showing question types by model family and alignment stage.
+9. The term 'alignment' should be clearly defined in the paper to specify whether it refers to instruction tuning, RLHF, or a combination, to aid interpretation of results.
+10. Consider whether reporting marginally significant results is necessary, as it may risk Type M/S errors and affect the robustness of conclusions.
+11. Report effect sizes alongside p-values for significant differences to improve interpretation of the magnitude of effects.
+12. Discuss potential confounders and interpretability limitations of the SAE feature analysis, such as question length and speaker turn effects.
+13. Expand the discussion to explore why LLMs show distributional differences in question types, such as limited exposure to diverse social interactions and over-reliance on templates.
+14. Suggest future work including fine-grained social interaction modeling, hybrid learning approaches, user studies in naturalistic settings, and generalizability to other domains and languages.
+15. Improve paper formatting and readability by clarifying section headings, structuring sections clearly, and adding concise summaries of key findings at the start of each major section.
+16. Consider adding a figure comparing main question-type distributions between humans and LLMs side-by-side, and make tables of SAE features more concise by showing only top features with p-values and effect directions.
+17. Mention data availability and how others can access the Reddit dataset, including any scraping policies or APIs used.
+18. Note any limitations related to computational cost, API quotas, or inability to run certain models locally.
+19. Early in the paper, clearly define what counts as a 'question' in the dataset, considering sentence structure and user intent, especially since some Reddit comments may be borderline.
+20. Briefly acknowledge prior work on clarification questions and clearly state how this study differs by focusing on diverse social functions and real-world corpora.
+21. Maintain confidence intervals and error bars in figures as they effectively communicate uncertainty.
+22. Ensure appendices are well linked, clearly organized, and easy to navigate, with Appendix A for prompts, B for annotation, and C for generation tables.","1. Explicitly mention the pragmatic framework used, such as the social action taxonomy, in the abstract to emphasize its importance in the analysis.
+2. Clarify the main contributions of the paper in the abstract, including the development of the question taxonomy, the dataset, and insights into the limitations of LLMs in question-asking.
+3. Suggest including practical implications or future directions in the abstract, such as how the findings could inform better alignment strategies or more natural dialogue systems.
+4. Expand the theoretical background in the introduction to include the role of question-asking in collaboration, information seeking, and social bonding.
+5. Clarify the research objectives explicitly in the introduction, specifying what the study aims to uncover about LLMs' question-asking behavior.
+6. Include a literature review section to better contextualize the work and identify the gap this paper fills.
+7. Clarify the limitations of previous studies, especially those focused on clarification questions, to justify the need for this new study.
+8. Include recent advances in alignment methods relevant to the study in the related works section.
+9. Organize the related works by question type or application domain to enhance readability and coherence.
+10. Clarify the coding scheme used for labeling questions and explain how it was validated, such as through intercoder reliability or pilot testing.
+11. Provide more detail on the selection criteria for the Reddit dataset and explain how it represents real-world social interactions.
+12. Clarify the prompt variations used and how they were designed to elicit different types of questions.
+13. Consider including limitations of the methodological approach, such as potential annotation bias or dataset representativeness issues.
+14. Expand the qualitative analysis in the results by providing more detailed examples of differences in question content and style between humans and LLMs.
+15. Clarify the statistical significance of findings and explain the practical meaning of p-values and effect sizes.
+16. Include comparative analysis across different models and prompt variations to better understand the effectiveness of alignment strategies.
+17. Add visualizations showing the distribution of question types across different models and prompts to improve accessibility of results.
+18. Emphasize practical implications in the conclusion, such as informing the development of more natural and effective dialogue systems.
+19. Clarify future research directions in the conclusion, such as exploring other question types, social contexts, or advanced alignment strategies.
+20. Summarize the main contributions again in the conclusion to improve clarity and impact.
+21. Ensure all citations are properly formatted and consistent with the journal or conference guidelines.
+22. Consider adding more recent studies to the references if relevant to the topic.
+23. Check for duplicate or redundant references and remove them to improve clarity and conciseness.
+24. Clarify the purpose of each appendix and ensure they are well-organized and appropriately labeled.
+25. Consider including code snippets or data visualizations in the appendices to enhance readability and usability.
+26. Ensure all tables and figures in the appendices are clearly labeled and referenced in the main text.
+27. Use consistent terminology throughout the paper, especially regarding definitions of question types and social actions.
+28. Consider using subheadings and bullet points to enhance readability, especially in the introduction and related works sections.
+29. Use clear and concise language to avoid jargon and ensure the paper is accessible to a broader audience.
+30. Provide more technical details on the alignment methods and their impact on question-asking behavior.
+31. Clarify methodological choices and justify why certain models or prompts were selected for analysis.
+32. Add additional visualizations, such as heatmaps or bar charts, to better illustrate the distribution of question types across models and prompts.
+33. Use color coding or annotations in figures and tables to highlight key findings.
+34. Emphasize the broader implications of the findings, such as their impact on designing more human-like dialogue systems and aligning LLMs with human social norms.
+35. Suggest practical applications of the findings, such as improving question-asking in customer service chatbots or virtual assistants.
+36. Use subheadings and bullet points to improve clarity, readability, and consistency in terminology throughout the paper."
