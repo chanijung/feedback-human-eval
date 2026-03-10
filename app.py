@@ -730,8 +730,8 @@ with tab2:
             st.session_state.units_nav = nav2 + 1
             st.rerun()
 
-    # Jump to first unannotated
-    jump_c, _ = st.columns([2, 6])
+    # Jump to first unannotated  /  Go to unit #
+    jump_c, goto_lbl, goto_num, goto_btn, _ = st.columns([2, 1, 1, 1, 3])
     with jump_c:
         if st.button("⏭ Jump to first unannotated", type="primary", key="jump_unannotated"):
             for i, row in assigned_units.iterrows():
@@ -739,6 +739,17 @@ with tab2:
                 if k not in st.session_state.unit_annots:
                     st.session_state.units_nav = int(i)
                     st.rerun()
+    with goto_lbl:
+        st.markdown("<div style='padding-top:0.45rem;font-size:0.9rem;'>Go to</div>", unsafe_allow_html=True)
+    with goto_num:
+        goto_input = st.number_input(
+            "unit#", min_value=1, max_value=len(assigned_units),
+            value=nav2 + 1, step=1, label_visibility="collapsed", key="goto_unit_num",
+        )
+    with goto_btn:
+        if st.button("Go", key="goto_unit_btn"):
+            st.session_state.units_nav = int(goto_input) - 1
+            st.rerun()
 
     st.markdown("---")
 
