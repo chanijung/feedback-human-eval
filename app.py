@@ -3,18 +3,20 @@ import json
 import logging
 import hashlib
 import random
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
 import pandas as pd
 import gspread
+from sklearn.feature_extraction.text import TfidfVectorizer
 from gspread.exceptions import WorksheetNotFound
 from google.oauth2 import service_account
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Feedback Human Evaluation",
+    page_title="Human Evaluation of Paper Feedback",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -49,14 +51,16 @@ html, body, .stApp {
 
 /* Top bar */
 .top-bar {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0.6rem 1rem;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 0.8rem 1rem;
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); margin-bottom: 1rem;
+    border-radius: var(--radius);
+    text-align: center;
+    gap: 0.4rem;
 }
 .top-bar h1 {
-    font-family: 'IBM Plex Mono', monospace; font-size: 1.05rem;
-    font-weight: 600; color: var(--accent); margin: 0;
+    font-family: 'IBM Plex Mono', monospace; font-size: 1.15rem;
+    font-weight: 700; color: var(--accent); margin: 0;
 }
 .progress-info { font-family: 'IBM Plex Mono', monospace; font-size: 0.78rem; color: var(--text-dim); }
 
@@ -64,11 +68,35 @@ html, body, .stApp {
 .fb-card {
     background: var(--surface); border: 1.5px solid var(--border);
     border-radius: var(--radius); padding: 1rem;
+    max-height: 520px; overflow-y: auto;
+    font-size: 0.92rem;
+    line-height: 1.5;
+}
+/* Custom scrollbar for feedback cards */
+.fb-card::-webkit-scrollbar {
+    width: 13px;
+}
+.fb-card::-webkit-scrollbar-track {
+    background: var(--surface2);
+    border-radius: 10px;
+}
+.fb-card::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 10px;
+}
+.fb-card::-webkit-scrollbar-thumb:hover {
+    background: var(--text-dim);
+}
+.fb-line {
+    margin-bottom: 0.65em;
+}
+.fb-line:last-child {
+    margin-bottom: 0;
 }
 .fb-card-label {
-    font-family: 'IBM Plex Mono', monospace; font-size: 0.7rem; font-weight: 600;
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem; font-weight: 600;
     color: var(--accent); text-transform: uppercase; letter-spacing: 0.1em;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.6rem;
 }
 
 /* Unit card */
@@ -92,11 +120,24 @@ html, body, .stApp {
     margin-bottom: 0.2rem;
 }
 
+/* Centered section heading (Feedback Sets, Your Ranking) */
+.sec-heading-center {
+    text-align: center;
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0.6rem;
+    color: var(--text);
+}
+
 /* Nav center info */
 .nav-center {
     text-align: center; font-family: 'IBM Plex Mono', monospace;
     font-size: 0.85rem; padding-top: 0.55rem; line-height: 1.4;
     color: var(--text-dim);
+}
+.nav-center strong {
+    color: var(--text);
+    font-weight: 700;
 }
 
 /* Buttons */
@@ -166,6 +207,37 @@ button[data-baseweb="tab"] {
 
 /* Hide anchor link icons on headings */
 h1 a, h2 a, h3 a, h4 a, h5 a, h6 a { display: none !important; }
+
+/* Paper title label — small text above the title */
+.paper-title-label {
+    text-align: center;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.25rem;
+}
+
+/* Paper title — Task 1 & 2: center, bolder */
+.paper-title {
+    text-align: center;
+    font-weight: 700;
+    font-size: 1.7rem;
+    margin-bottom: 0.5rem;
+    color: var(--text);
+}
+
+/* Instructions heading in red */
+.instructions-label { color: #dc2626; font-weight: 600; }
+
+/* Instructions block — larger font, visually separated from paper title */
+.instructions-block {
+    font-size: 1.08rem;
+    line-height: 1.65;
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -394,6 +466,147 @@ def _shuffled_models(annotator: str, models: list[str]) -> list[str]:
     return [models[i] for i in order]
 
 
+_NUMBERED_ITEM_RE = re.compile(r"^\d+[\.\)]\s+")
+
+
+def _parse_numbered_items(text: str) -> list[str]:
+    """Split a feedback text into individual numbered items."""
+    items: list[str] = []
+    current: list[str] = []
+    for line in text.strip().split("\n"):
+        if _NUMBERED_ITEM_RE.match(line):
+            if current:
+                items.append(" ".join(current))
+            current = [line]
+        elif line.strip() and current:
+            current.append(line.strip())
+    if current:
+        items.append(" ".join(current))
+    return items
+
+
+@st.cache_data
+def _compute_tfidf_keywords(
+    mtime: float, _df: pd.DataFrame, top_k: int = 5
+) -> dict[tuple, frozenset]:
+    """Return {(paper_id, model, unit_idx): frozenset[keyword]} for all feedback units.
+
+    Each numbered feedback item is one document. TF-IDF is fit across all items
+    so that corpus-wide rare (but item-specific) terms score highest.
+    binary=True is used because items are short (TF ≈ 0/1 anyway).
+    """
+    records: list[tuple[str, str, int, str]] = []
+    for _, row in _df.iterrows():
+        paper_id = str(row["paper_id"])
+        for col in [c for c in _df.columns if c.startswith("feedback_set-")]:
+            model = col.replace("feedback_set-", "")
+            text = str(row.get(col, "") or "").strip()
+            if not text:
+                continue
+            for idx, item_text in enumerate(_parse_numbered_items(text)):
+                # Strip the leading "1. " or "1) " before using as a key
+                clean_item = _NUMBERED_ITEM_RE.sub("", item_text).strip()
+                records.append((paper_id, model, idx, clean_item))
+
+    if not records:
+        return {}
+
+    texts = [r[3] for r in records]
+    base_kwargs = dict(
+        binary=True,
+        max_df=0.85,
+        stop_words="english",
+        token_pattern=r"[a-zA-Z]{3,}",
+    )
+    # (ngram_range, min_df) pairs: unigrams filter more aggressively to reduce noise
+    ngram_configs = [((1, 1), 0.01), ((2, 2), 0.01)]
+
+    result: dict[tuple, frozenset] = {}
+    for ngram_range, min_df in ngram_configs:
+        try:
+            vec = TfidfVectorizer(**base_kwargs, ngram_range=ngram_range, min_df=min_df)
+            tfidf = vec.fit_transform(texts)
+        except ValueError:
+            continue
+        feature_names = vec.get_feature_names_out()
+        for i, (paper_id, model, unit_idx, item_text) in enumerate(records):
+            scores = tfidf[i].toarray()[0]
+            top_idx = scores.argsort()[-top_k:][::-1]
+            kws = frozenset(feature_names[j] for j in top_idx if scores[j] > 0)
+            # key is (paper_id, model, clean_item_text)
+            key = (paper_id, model, item_text)
+            result[key] = result.get(key, frozenset()) | kws
+    return result
+
+
+def _highlight_keywords(escaped_text: str, keywords: frozenset) -> str:
+    """Wrap keyword occurrences with <strong>, handling overlapping matches.
+
+    All match spans are collected first, then overlapping/adjacent spans are
+    merged, so overlapping bigrams produce one contiguous <strong> block with
+    no nested tags (e.g. 'selection bias' + 'bias caused' → <strong>selection
+    bias caused</strong>).
+    """
+    if not keywords:
+        return escaped_text
+
+    spans: list[tuple[int, int]] = []
+    for kw in keywords:
+        for m in re.finditer(r"\b" + re.escape(kw) + r"\b", escaped_text, flags=re.IGNORECASE):
+            spans.append((m.start(), m.end()))
+
+    if not spans:
+        return escaped_text
+
+    spans.sort()
+    merged: list[list[int]] = [list(spans[0])]
+    for start, end in spans[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    parts: list[str] = []
+    prev = 0
+    for start, end in merged:
+        parts.append(escaped_text[prev:start])
+        parts.append(f"<strong>{escaped_text[start:end]}</strong>")
+        prev = end
+    parts.append(escaped_text[prev:])
+    return "".join(parts)
+
+
+def _format_feedback_text(
+    text: str,
+    keywords_by_unit: dict[int, frozenset] | None = None,
+) -> str:
+    """Render plain feedback text as safe HTML with explicit line spacing.
+
+    If keywords_by_unit is provided ({unit_idx: frozenset[word]}), high-TF-IDF
+    terms in each numbered item are wrapped in <strong>.
+    """
+    safe = html.escape(text).strip()
+    if not safe:
+        return ""
+
+    lines = safe.split("\n")
+    if not keywords_by_unit:
+        return "".join(
+            f"<div class='fb-line'>{line if line.strip() else '&nbsp;'}</div>"
+            for line in lines
+        )
+
+    unit_idx = -1
+    out: list[str] = []
+    for line in lines:
+        if _NUMBERED_ITEM_RE.match(line):
+            unit_idx += 1
+            kws = keywords_by_unit.get(unit_idx, frozenset())
+            line = _highlight_keywords(line, kws)
+        out.append(f"<div class='fb-line'>{line if line.strip() else '&nbsp;'}</div>")
+    return "".join(out)
+
+
 _SET_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H"]
 
 
@@ -443,8 +656,8 @@ if _current and st.session_state.get("_loaded_for_annotator", "") not in ("", _c
 if not st.session_state.annotator:
     _, mid, _ = st.columns([1, 2, 1])
     with mid:
-        st.markdown("## 👤 Enter your first name to begin")
-        st.caption("Your name is recorded with every annotation.")
+        st.markdown("## 👤 Enter your FIRST NAME to begin")
+        # st.caption("Your name is recorded with every annotation.")
         name = st.text_input("Name", placeholder="e.g. chani", label_visibility="collapsed")
         if st.button("Continue →", type="primary"):
             if name.strip():
@@ -460,6 +673,9 @@ annotator: str = st.session_state.annotator
 # ── LOAD DATA ─────────────────────────────────────────────────────────────────
 df_sets = _load_sets(_SETS_PATH.stat().st_mtime if _SETS_PATH.exists() else 0.0)
 df_units = _load_units(_UNITS_PATH.stat().st_mtime if _UNITS_PATH.exists() else 0.0)
+
+_sets_mtime = _SETS_PATH.stat().st_mtime if _SETS_PATH.exists() else 0.0
+tfidf_keywords = _compute_tfidf_keywords(_sets_mtime, df_sets)
 
 assigned_sets = _get_assigned(df_sets, annotator)
 assigned_units = _get_assigned(df_units, annotator)
@@ -500,11 +716,11 @@ n_units_done = sum(
 )
 
 # ── TOP BAR ───────────────────────────────────────────────────────────────────
-col_bar, col_change = st.columns([8, 1])
+col_l, col_bar, col_r = st.columns([1.2, 8, 1.2], vertical_alignment="center")
 with col_bar:
     st.markdown(f"""
     <div class="top-bar">
-      <h1>⬡ Feedback Human Evaluation</h1>
+      <h1>Human Evaluation of Paper Feedback</h1>
       <span class="progress-info">
         <span style="color:var(--accent); margin-right:1rem;">👤 {html.escape(annotator)}</span>
         Task 1: {n_sets_done}/{n_sets}
@@ -513,12 +729,15 @@ with col_bar:
       </span>
     </div>
     """, unsafe_allow_html=True)
-with col_change:
-    if st.button("Change name"):
+with col_r:
+    if st.button("Change name", use_container_width=True):
         _clear_user_state()
         st.session_state.annotator = ""
         st.query_params.pop("annotator", None)
         st.rerun()
+
+# Space after top bar
+st.markdown("<div style='margin-bottom: 0.5rem;'></div>", unsafe_allow_html=True)
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
 tab1, tab2 = st.tabs([
@@ -561,18 +780,23 @@ with tab1:
     # ── Navigation ────────────────────────────────────────────────────────────
     c_prev, c_pos, c_next = st.columns([2, 3, 2])
     with c_prev:
-        if st.button("← Prev", disabled=(nav1 == 0), key="sets_prev"):
+        if st.button("← Prev", disabled=(nav1 == 0), key="sets_prev", use_container_width=True):
             st.session_state.sets_nav = nav1 - 1
             st.rerun()
     with c_pos:
         is_ranked = paper_id1 in st.session_state.rankings
         badge_html = '<span class="done-chip">✓ Ranked</span>' if is_ranked else '<span class="todo-chip">Not yet ranked</span>'
         st.markdown(
-            f"<div class='nav-center'>Paper {nav1 + 1} / {len(assigned_sets)}<br>{badge_html}</div>",
+            f"<div class='nav-center'><strong>Paper {nav1 + 1} / {len(assigned_sets)}</strong><br>{badge_html}</div>",
             unsafe_allow_html=True,
         )
     with c_next:
-        if st.button("Next →", disabled=(nav1 == len(assigned_sets) - 1), key="sets_next"):
+        if st.button(
+            "Next →",
+            disabled=(nav1 == len(assigned_sets) - 1),
+            key="sets_next",
+            use_container_width=True,
+        ):
             st.session_state.sets_nav = nav1 + 1
             st.rerun()
 
@@ -580,37 +804,53 @@ with tab1:
 
     # ── Paper info ────────────────────────────────────────────────────────────
     if title1:
-        st.markdown(f"### {title1}")
-    st.caption(f"`paper_id: {paper_id1}`")
+        st.markdown(
+            f"<div class='paper-title-label'>Paper Title</div><div class='paper-title'>{html.escape(title1)}</div>",
+            unsafe_allow_html=True,
+        )
 
     st.markdown("""
-    **Instructions:** Read all feedback sets below, then assign a unique rank to each one.
-    Evaluate based on three criteria: **validity** (is the feedback a valid issue/question?),
-    **actionability** (can authors act on it?), and **helpfulness** (overall value to the authors).
-    **Rank 1 = best, rank 5 = worst.**
-    The sets are labeled A–E; the underlying model is hidden to avoid bias.
-    """)
+    <div class="instructions-block">
+    <span class="instructions-label">📌 Instructions:</span> Read all feedback sets below, then <strong>assign a unique rank to each one</strong>.
+    Evaluate based on three criteria: <strong>validity</strong> (is the feedback a valid issue/question?),
+    <strong>actionability</strong> (can authors act on it?), and <strong>helpfulness</strong> (overall value to the authors).
+    <strong>Rank 1 = best, rank 3 = worst.</strong>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # ── Feedback sets (nested tabs) ────────────────────────────────────────────
-    st.markdown("#### 📄 Read Feedback Sets")
-    inner_tabs = st.tabs([f"Set {lbl}" for lbl in labels])
-    for inner_tab, lbl in zip(inner_tabs, labels):
+    # ── Feedback sets (side-by-side columns) ──────────────────────────────────
+    st.markdown("<div class='sec-heading-center'>📄 Feedback Sets</div>", unsafe_allow_html=True)
+    set_cols = st.columns(len(labels))
+    for col, lbl in zip(set_cols, labels):
         model = label_to_model[lbl]
         col_key = f"feedback_set-{model}"
         text = str(srow.get(col_key, "") or "").strip()
-        with inner_tab:
+        with col:
+            st.markdown(
+                f"<div class='fb-card-label'>Set {lbl}</div>",
+                unsafe_allow_html=True,
+            )
             if text:
-                st.markdown(text)
+                items = _parse_numbered_items(text)
+                kw_by_unit = {}
+                for idx, itm in enumerate(items):
+                    clean = _NUMBERED_ITEM_RE.sub("", itm).strip()
+                    k = (paper_id1, model, clean)
+                    kw_by_unit[idx] = tfidf_keywords.get(k, frozenset())
+
+                st.markdown(
+                    f"<div class='fb-card'>{_format_feedback_text(text, kw_by_unit)}</div>",
+                    unsafe_allow_html=True,
+                )
             else:
                 st.caption("(no content)")
 
     st.markdown("---")
 
-    # ── Ranking UI ────────────────────────────────────────────────────────────
-    st.markdown("#### 🏆 Your Ranking")
-    st.caption("Assign each set a unique rank. Duplicate ranks will be flagged.")
+    # ── Ranking UI ────────────────────────────────────────────
+    st.markdown("<div class='sec-heading-center'>🏆 Your Ranking</div>", unsafe_allow_html=True)
 
     existing_ranking = st.session_state.rankings.get(paper_id1, [])
     existing_model_ranks: dict[str, int] = {}
@@ -715,147 +955,161 @@ with tab2:
     # ── Navigation ────────────────────────────────────────────────────────────
     c_prev2, c_pos2, c_next2 = st.columns([2, 3, 2])
     with c_prev2:
-        if st.button("← Prev", disabled=(nav2 == 0), key="units_prev"):
+        if st.button("← Prev", disabled=(nav2 == 0), key="units_prev", use_container_width=True):
             st.session_state.units_nav = nav2 - 1
             st.rerun()
     with c_pos2:
         is_done2 = unit_key2 in st.session_state.unit_annots
         badge2 = '<span class="done-chip">✓ Annotated</span>' if is_done2 else '<span class="todo-chip">Not yet annotated</span>'
         st.markdown(
-            f"<div class='nav-center'>Unit {nav2 + 1} / {len(assigned_units)}<br>{badge2}</div>",
+            f"<div class='nav-center'><strong>Unit {nav2 + 1} / {len(assigned_units)}</strong><br>{badge2}</div>",
             unsafe_allow_html=True,
         )
+
+        # Centered Go to # UI
+        st.markdown("<div style='margin-top:0.4rem;'></div>", unsafe_allow_html=True)
+        gc1, gc2, gc3 = st.columns([1.5, 1, 0.9])
+        with gc1:
+            st.markdown("<div style='text-align:right; font-size:0.85rem; padding-top:0.45rem;'>Go to #</div>", unsafe_allow_html=True)
+        with gc2:
+            goto_input = st.number_input(
+                "unit#", min_value=1, max_value=len(assigned_units),
+                value=nav2 + 1, step=1, label_visibility="collapsed", key="goto_unit_num",
+            )
+        with gc3:
+            if st.button("Go", key="goto_unit_btn", use_container_width=True):
+                st.session_state.units_nav = int(goto_input) - 1
+                st.rerun()
+
     with c_next2:
-        if st.button("Next →", disabled=(nav2 == len(assigned_units) - 1), key="units_next"):
+        if st.button(
+            "Next →",
+            disabled=(nav2 == len(assigned_units) - 1),
+            key="units_next",
+            use_container_width=True,
+        ):
             st.session_state.units_nav = nav2 + 1
             st.rerun()
 
-    # Jump to first unannotated  /  Go to unit #
-    jump_c, goto_lbl, goto_num, goto_btn, _ = st.columns([2, 1, 1, 1, 3])
-    with jump_c:
-        if st.button("⏭ Jump to first unannotated", type="primary", key="jump_unannotated"):
+    # Jump to first unannotated (left aligned or in a separate row)
+    c_jump, _ = st.columns([2.5, 4.5])
+    with c_jump:
+        if st.button("⏭ Jump to first unannotated", type="primary", key="jump_unannotated", use_container_width=True):
             for pos, (_, row) in enumerate(assigned_units.iterrows()):
                 k = (str(row["paper_id"]), str(row["feedback_source"]), str(row["feedback_unit"]).strip())
                 if k not in st.session_state.unit_annots:
                     st.session_state.units_nav = pos
                     st.rerun()
-    with goto_lbl:
-        st.markdown("<div style='padding-top:0.45rem;font-size:0.9rem;'>Go to</div>", unsafe_allow_html=True)
-    with goto_num:
-        goto_input = st.number_input(
-            "unit#", min_value=1, max_value=len(assigned_units),
-            value=nav2 + 1, step=1, label_visibility="collapsed", key="goto_unit_num",
-        )
-    with goto_btn:
-        if st.button("Go", key="goto_unit_btn"):
-            st.session_state.units_nav = int(goto_input) - 1
-            st.rerun()
 
     st.markdown("---")
 
     # ── Paper + unit ──────────────────────────────────────────────────────────
     if title2:
-        st.markdown(f"### {title2}")
+        st.markdown(
+            f"<div class='paper-title-label'>Paper Title</div><div class='paper-title'>{html.escape(title2)}</div>",
+            unsafe_allow_html=True,
+        )
     st.caption(f"`paper_id: {paper_id2}`")
 
     st.markdown(f"""
     <div class="unit-card">
-      <div class="unit-text">{html.escape(unit_text2)}</div>
+      <div class="unit-text">{_highlight_keywords(html.escape(unit_text2), tfidf_keywords.get((paper_id2, source2, unit_text2.strip()), frozenset()))}</div>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # ── 1. VALIDITY ───────────────────────────────────────────────────────────
-    st.markdown("##### 1. Validity")
-    st.caption("Do you agree that this feedback is a valid issue/question?")
+    # ── QUESTIONS ─────────────────────────────────────────────────────────────
+    q_col1, q_col2, q_col3 = st.columns([1, 1.2, 1], gap="medium")
 
-    _validity_opts = ["agree", "disagree"]
-    _validity_desc = {
-        "agree": "You agree the point is valid.",
-        "disagree": "You disagree with the premise or issue, or you think the reviewer is mistaken.",
-    }
-    _cur_validity = existing2.get("validity")
-    _validity_idx = _validity_opts.index(_cur_validity) if _cur_validity in _validity_opts else None
+    with q_col1:
+        # ── 1. VALIDITY ───────────────────────────────────────────────────────────
+        st.markdown("##### 1. Validity")
+        st.caption("Do you agree that this feedback is a valid issue/question?")
 
-    validity = st.radio(
-        "Validity",
-        options=_validity_opts,
-        index=_validity_idx,
-        format_func=lambda x: f"{x}  —  {_validity_desc[x]}",
-        label_visibility="collapsed",
-        key=f"validity_{nav2}",
-    )
+        _validity_opts = ["agree", "disagree"]
+        _validity_desc = {
+            "agree": "You agree the point is valid.",
+            "disagree": "You disagree with the premise or issue, or you think the reviewer is mistaken.",
+        }
+        _cur_validity = existing2.get("validity")
+        _validity_idx = _validity_opts.index(_cur_validity) if _cur_validity in _validity_opts else None
 
-    st.markdown("---")
+        validity = st.radio(
+            "Validity",
+            options=_validity_opts,
+            index=_validity_idx,
+            format_func=lambda x: f"{x}  —  {_validity_desc[x]}",
+            label_visibility="collapsed",
+            key=f"validity_{nav2}",
+        )
 
-    # ── 2. ACTION ─────────────────────────────────────────────────────────────
-    st.markdown("##### 2. Action")
-    st.caption("What action are you willing to take in response to this feedback?")
+    with q_col2:
+        # ── 2. ACTION ─────────────────────────────────────────────────────────────
+        st.markdown("##### 2. Action")
+        st.caption("What action are you willing to take?")
 
-    _action_opts = [
-        "will_revise",
-        "defer_future_work",
-        "point_to_existing_content",
-        "no_revision_accept",
-        "no_revision_contest",
-        "no_action_other",
-    ]
-    _action_desc = {
-        "will_revise": "Make a concrete change to the manuscript (add text/experiments/citations, fix figures, restructure, etc.).",
-        "defer_future_work": "Acknowledge the point is valid but defer it (future work, out of scope, resource constraints). No revision promised.",
-        "point_to_existing_content": "The paper already addresses this; point to a specific section, appendix, figure, or table. No revision promised.",
-        "no_revision_accept": "Acknowledge the point is valid but make no change and do not defer to future work.",
-        "no_revision_contest": "Dispute or reject the feedback and make no change.",
-        "no_action_other": "No action for a reason not captured above. Explain in 'Details' below.",
-    }
-    _cur_action = existing2.get("action")
-    _action_idx = _action_opts.index(_cur_action) if _cur_action in _action_opts else None
+        _action_opts = [
+            "will_revise",
+            "defer_future_work",
+            "point_to_existing_content",
+            "no_revision_accept",
+            "no_revision_contest",
+            "no_action_other",
+        ]
+        _action_desc = {
+            "will_revise": "Make a concrete change to the manuscript.",
+            "defer_future_work": "Acknowledge but defer (future work/out of scope).",
+            "point_to_existing_content": "Already addresses this; point to section/table.",
+            "no_revision_accept": "Valid but make no change/no deferral.",
+            "no_revision_contest": "Dispute or reject and make no change.",
+            "no_action_other": "No action for another reason.",
+        }
+        _cur_action = existing2.get("action")
+        _action_idx = _action_opts.index(_cur_action) if _cur_action in _action_opts else None
 
-    action = st.radio(
-        "Action",
-        options=_action_opts,
-        index=_action_idx,
-        format_func=lambda x: f"{x}  —  {_action_desc[x]}",
-        label_visibility="collapsed",
-        key=f"action_{nav2}",
-    )
+        action = st.radio(
+            "Action",
+            options=_action_opts,
+            index=_action_idx,
+            format_func=lambda x: f"{x}  —  {_action_desc[x]}",
+            label_visibility="collapsed",
+            key=f"action_{nav2}",
+        )
 
-    details = st.text_area(
-        "Details",
-        value=existing2.get("details", ""),
-        placeholder="Short description of the action or reason for no action",
-        height=80,
-        key=f"details_{nav2}",
-        label_visibility="visible",
-    )
+        details = st.text_area(
+            "Details",
+            value=existing2.get("details", ""),
+            placeholder="Short description of the action or reason for no action",
+            height=80,
+            key=f"details_{nav2}",
+            label_visibility="visible",
+        )
 
-    st.markdown("---")
+    with q_col3:
+        # ── 3. HELPFULNESS ────────────────────────────────────────────────────────
+        st.markdown("##### 3. Helpfulness")
+        st.caption("Rate overall value on a 5-point scale.")
 
-    # ── 3. HELPFULNESS ────────────────────────────────────────────────────────
-    st.markdown("##### 3. Helpfulness")
-    st.caption("Rate the overall value of this feedback to the authors on a 5-point scale.")
+        _help_opts = [5, 4, 3, 2, 1]
+        _help_fmt = {
+            1: "1 — Not helpful",
+            2: "2 — Slightly",
+            3: "3 — Moderately",
+            4: "4 — Helpful",
+            5: "5 — Very helpful",
+        }
+        _cur_help = existing2.get("helpfulness")
+        _help_idx = (5 - _cur_help) if (_cur_help is not None and 1 <= _cur_help <= 5) else None
 
-    _help_opts = [5, 4, 3, 2, 1]
-    _help_fmt = {
-        1: "1 — Not helpful at all",
-        2: "2 — Slightly helpful",
-        3: "3 — Moderately helpful",
-        4: "4 — Helpful",
-        5: "5 — Very helpful",
-    }
-    _cur_help = existing2.get("helpfulness")
-    _help_idx = (5 - _cur_help) if (_cur_help is not None and 1 <= _cur_help <= 5) else None
-
-    helpfulness = st.radio(
-        "Helpfulness",
-        options=_help_opts,
-        index=_help_idx,
-        format_func=lambda x: _help_fmt[x],
-        horizontal=True,
-        label_visibility="collapsed",
-        key=f"help_{nav2}",
-    )
+        helpfulness = st.radio(
+            "Helpfulness",
+            options=_help_opts,
+            index=_help_idx,
+            format_func=lambda x: _help_fmt[x],
+            label_visibility="collapsed",
+            key=f"help_{nav2}",
+        )
 
     st.markdown("---")
 

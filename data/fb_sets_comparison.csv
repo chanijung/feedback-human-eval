@@ -1,4 +1,4 @@
-paper_id,title,annotators,feedback_set-GPT-5_2,feedback_set-Gemini-3-flash,feedback_set-Llama3_1-8b-Instruct,feedback_set-Olmo-3-7B-Instruct,feedback_set-Qwen3-8b
+paper_id,title,annotators,feedback_set-GPT-5_2,feedback_set-Gemini-3-flash,feedback_set-Qwen3-8b
 coginterp,How Do LLMs Ask Questions? A Pragmatic Comparison with Human Question-Asking,"hyunwoo, jimin, xuhui, chani, maarten","1. Clarify the central claim of the paper and explicitly define what is meant by “human-like.” Distinguish between describing differences from humans and normatively arguing why matching human distributions improves interaction quality, specifying for whom and in what settings.
 2. Strengthen the motivation for choosing the r/NoStupidQuestions subreddit by providing evidence or argument that it is representative of the real-world social interactions of interest, and add a limitations note or justification regarding its specific norms and characteristics.
 3. Define the unit of analysis clearly and formally early in the Methods section, specifying what constitutes a response for LLMs, what counts as a human response, and exactly what is being compared in each test.
@@ -38,40 +38,7 @@ coginterp,How Do LLMs Ask Questions? A Pragmatic Comparison with Human Question-
 7. The HypotheSAE analysis reveals that LLMs focus on emotional states while humans focus on concise 'why' questions, suggesting LLMs over-perform a 'therapist/assistant' role.
 8. The captions for Figures 2 and 3 do not explain the error bars, which are based on cluster bootstrap.
 9. Appendix C includes an example of a human response asking a 'meta-question' (the inverse), which is a form of creative questioning that LLMs lack but is not explicitly pointed out in the text.
-10. The paper does not cite work on sycophancy in LLMs, which could explain the lack of 'Challenge' questions.","1. The paper's abstract and introduction are too broad, making it difficult to identify the specific research question being investigated. The authors should clarify the exact research question(s) the paper aims to answer.
-2. The literature review section is somewhat disjointed and does not clearly connect existing research to the paper's contributions. The authors should explicitly discuss how their findings build upon or challenge prior work.
-3. The explanation of the taxonomy of social actions used to classify questions is insufficiently detailed and may be inaccessible to readers without a background in pragmatics. The authors should provide a more detailed and accessible explanation.
-4. Some sentences and paragraphs in the paper are convoluted or unclear, reducing readability. The authors should revise the text to improve clarity and consistency.
-5. The discussion of the implications of the findings regarding differences between human and LLM question-asking behavior is insufficiently nuanced and detailed. The authors should provide a more thorough and nuanced discussion of these implications.
-6. The paper briefly mentions some limitations such as using a single dataset and relying on human annotations, but lacks an explicit and thorough discussion of these limitations and their impact on the findings.
-7. The analysis of the results is not sufficiently detailed or in-depth. The authors should more closely examine patterns and trends in the data and discuss their potential implications.
-8. The discussion of the broader implications of the findings on differences between human and LLM question-asking behavior could be more detailed and nuanced.
-9. Some terms used in the paper are not clearly defined or consistently used throughout the text. The authors should revise the manuscript to ensure clear and consistent terminology.
-10. There are formatting issues and inconsistencies in the paper's style. The authors should revise the text to ensure it meets the journal's formatting and style guidelines.
-11. The appendix lacks detailed explanations of the data collection process, including methods used to collect and annotate the data.
-12. The appendix lacks detailed information about the models used in the study, including their architectures and training procedures.
-13. The appendix could provide a more detailed analysis of the results, including an in-depth examination of patterns and trends in the data.","1. The paper's title is somewhat long and vague about the social context of the study; it should be more precise and explicitly mention the social aspect of question-asking.
-2. The abstract should emphasize the contrast between LLM and human social functions of questions, highlighting that LLMs under-use and misalign with diverse social question functions in real-world settings.
-3. The rationale for dataset sampling and model selection should be clarified, including why the Reddit subforum was chosen and the reasons for selecting six LLM families with diverse characteristics.
-4. The 'Taxonomy' prompt should be explicitly described as guiding models toward social-function categories rather than merely forcing them.
-5. The discussion of prompt-induced biases would benefit from including specific examples of how each prompt affected model outputs, such as overuse of rhetorical questions under the Imitate prompt.
-6. To improve reproducibility, provide full prompt templates in a copy-paste ready and clearly formatted manner, and clarify any API rate limits or restrictions encountered during experiments.
-7. The paper should discuss the reliability of human question annotations and the representativeness of the Reddit sample for typical human question-asking behavior.
-8. The results on how alignment affects different model families should be clarified with visual summaries such as bar plots showing question types by model family and alignment stage.
-9. The term 'alignment' should be clearly defined in the paper to specify whether it refers to instruction tuning, RLHF, or a combination, to aid interpretation of results.
-10. Consider whether reporting marginally significant results is necessary, as it may risk Type M/S errors and affect the robustness of conclusions.
-11. Report effect sizes alongside p-values for significant differences to improve interpretation of the magnitude of effects.
-12. Discuss potential confounders and interpretability limitations of the SAE feature analysis, such as question length and speaker turn effects.
-13. Expand the discussion to explore why LLMs show distributional differences in question types, such as limited exposure to diverse social interactions and over-reliance on templates.
-14. Suggest future work including fine-grained social interaction modeling, hybrid learning approaches, user studies in naturalistic settings, and generalizability to other domains and languages.
-15. Improve paper formatting and readability by clarifying section headings, structuring sections clearly, and adding concise summaries of key findings at the start of each major section.
-16. Consider adding a figure comparing main question-type distributions between humans and LLMs side-by-side, and make tables of SAE features more concise by showing only top features with p-values and effect directions.
-17. Mention data availability and how others can access the Reddit dataset, including any scraping policies or APIs used.
-18. Note any limitations related to computational cost, API quotas, or inability to run certain models locally.
-19. Early in the paper, clearly define what counts as a 'question' in the dataset, considering sentence structure and user intent, especially since some Reddit comments may be borderline.
-20. Briefly acknowledge prior work on clarification questions and clearly state how this study differs by focusing on diverse social functions and real-world corpora.
-21. Maintain confidence intervals and error bars in figures as they effectively communicate uncertainty.
-22. Ensure appendices are well linked, clearly organized, and easy to navigate, with Appendix A for prompts, B for annotation, and C for generation tables.","1. Explicitly mention the pragmatic framework used, such as the social action taxonomy, in the abstract to emphasize its importance in the analysis.
+10. The paper does not cite work on sycophancy in LLMs, which could explain the lack of 'Challenge' questions.","1. Explicitly mention the pragmatic framework used, such as the social action taxonomy, in the abstract to emphasize its importance in the analysis.
 2. Clarify the main contributions of the paper in the abstract, including the development of the question taxonomy, the dataset, and insights into the limitations of LLMs in question-asking.
 3. Suggest including practical implications or future directions in the abstract, such as how the findings could inform better alignment strategies or more natural dialogue systems.
 4. Expand the theoretical background in the introduction to include the role of question-asking in collaboration, information seeking, and social bonding.
