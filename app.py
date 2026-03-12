@@ -487,13 +487,15 @@ def _parse_numbered_items(text: str) -> list[str]:
 
 @st.cache_data
 def _compute_tfidf_keywords(
-    mtime: float, _df: pd.DataFrame, top_k: int = 5
+    mtime: float, _df: pd.DataFrame, units_mtime: float = 0.0, _df_units: pd.DataFrame | None = None, top_k: int = 5
 ) -> dict[tuple, frozenset]:
     """Return {(paper_id, model, unit_idx): frozenset[keyword]} for all feedback units.
 
     Each numbered feedback item is one document. TF-IDF is fit across all items
     so that corpus-wide rare (but item-specific) terms score highest.
     binary=True is used because items are short (TF ≈ 0/1 anyway).
+    Also incorporates individual units from df_units (e.g. Llama, Olmo) so
+    those units receive TF-IDF keyword highlights as well.
     """
     records: list[tuple[str, str, int, str]] = []
     for _, row in _df.iterrows():
@@ -507,6 +509,15 @@ def _compute_tfidf_keywords(
                 # Strip the leading "1. " or "1) " before using as a key
                 clean_item = _NUMBERED_ITEM_RE.sub("", item_text).strip()
                 records.append((paper_id, model, idx, clean_item))
+
+    # Also add individual feedback units from df_units (covers models not in df_sets)
+    if _df_units is not None and not _df_units.empty:
+        for _, row in _df_units.iterrows():
+            paper_id = str(row["paper_id"])
+            model = str(row.get("feedback_source", "") or "").strip()
+            unit_text = str(row.get("feedback_unit", "") or "").strip()
+            if model and unit_text:
+                records.append((paper_id, model, 0, unit_text))
 
     if not records:
         return {}
@@ -675,7 +686,8 @@ df_sets = _load_sets(_SETS_PATH.stat().st_mtime if _SETS_PATH.exists() else 0.0)
 df_units = _load_units(_UNITS_PATH.stat().st_mtime if _UNITS_PATH.exists() else 0.0)
 
 _sets_mtime = _SETS_PATH.stat().st_mtime if _SETS_PATH.exists() else 0.0
-tfidf_keywords = _compute_tfidf_keywords(_sets_mtime, df_sets)
+_units_mtime = _UNITS_PATH.stat().st_mtime if _UNITS_PATH.exists() else 0.0
+tfidf_keywords = _compute_tfidf_keywords(_sets_mtime, df_sets, _units_mtime, df_units)
 
 assigned_sets = _get_assigned(df_sets, annotator)
 assigned_units = _get_assigned(df_units, annotator)
