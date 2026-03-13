@@ -824,7 +824,7 @@ with tab1:
     st.markdown("""
     <div class="instructions-block">
     <span class="instructions-label">📌 Instructions:</span> Read all feedback sets below, then <strong>assign a unique rank to each one</strong>.
-    Evaluate based on three criteria: <strong>validity</strong> (is the feedback a valid issue/question?),
+    Evaluate based on three criteria: <strong>validity</strong> (is the feedback a valid issue/question/suggestion?),
     <strong>actionability</strong> (can authors act on it?), and <strong>helpfulness</strong> (overall value to the authors).
     <strong>Rank 1 = best, rank 3 = worst.</strong>
     </div>
@@ -1037,7 +1037,7 @@ with tab2:
     with q_col1:
         # ── 1. VALIDITY ───────────────────────────────────────────────────────────
         st.markdown("##### 1. Validity")
-        st.caption("Do you agree that this feedback is a valid issue/question?")
+        st.caption("Do you agree that this feedback is a valid issue/question/suggestion?")
 
         _validity_opts = ["agree", "disagree"]
         _validity_desc = {
