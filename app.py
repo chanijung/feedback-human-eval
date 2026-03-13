@@ -253,7 +253,7 @@ _RANKINGS_HEADER = ["annotator", "paper_id", "ranked_models", "timestamp"]
 # unit_hash = MD5(paper_id + source + unit_text) — used as a stable unique key for upsert
 _UNITS_HEADER = [
     "unit_hash", "annotator", "paper_id", "feedback_source", "feedback_unit",
-    "validity", "action", "details", "helpfulness", "timestamp",
+    "validity", "specificity", "action", "details", "helpfulness", "timestamp",
 ]
 
 
@@ -330,7 +330,7 @@ def save_ranking(annotator: str, paper_id: str, ranked_models: list) -> tuple[bo
 
 def save_unit_annotation(
     annotator: str, paper_id: str, source: str, unit_text: str,
-    validity: str, action: str, details: str, helpfulness: int,
+    validity: str, specificity: int, action: str, details: str, helpfulness: int,
 ) -> tuple[bool, str | None]:
     """Upsert a unit annotation. Matches existing row by (unit_hash, annotator).
     Returns (success, error_message).
@@ -341,7 +341,7 @@ def save_unit_annotation(
     try:
         ts = datetime.now(timezone.utc).isoformat()
         uhash = _unit_hash(paper_id, source, unit_text)
-        row = [uhash, annotator, paper_id, source, unit_text, validity, action, details, str(helpfulness), ts]
+        row = [uhash, annotator, paper_id, source, unit_text, validity, str(specificity), action, details, str(helpfulness), ts]
         existing = ws.get_all_values()
         # Find header to locate column positions
         header = existing[0] if existing else _UNITS_HEADER
@@ -400,25 +400,32 @@ def load_unit_annots_from_sheets(annotator: str) -> dict:
         i_src  = ci("feedback_source", 3)
         i_unit = ci("feedback_unit", 4)
         i_val  = ci("validity", 5)
-        i_act  = ci("action", 6)
-        i_det  = ci("details", 7)
-        i_help = ci("helpfulness", 8)
+        i_spec = ci("specificity", 6)
+        i_act  = ci("action", 7)
+        i_det  = ci("details", 8)
+        i_help = ci("helpfulness", 9)
 
         result = {}
         for r in rows[1:]:
-            if not r or len(r) <= max(i_ann, i_pid, i_src, i_unit, i_help):
+            if not r or len(r) <= max(i_ann, i_pid, i_src, i_unit):
                 continue
             if r[i_ann].strip() != annotator:
                 continue
             key = (r[i_pid].strip(), r[i_src].strip(), r[i_unit].strip())
             try:
-                raw_h = r[i_help].strip()
+                raw_h = r[i_help].strip() if len(r) > i_help else ""
                 helpfulness = int(raw_h) if raw_h.isdigit() else None
             except (ValueError, IndexError):
                 helpfulness = None
+            try:
+                raw_s = r[i_spec].strip() if len(r) > i_spec else ""
+                specificity = int(raw_s) if raw_s.isdigit() else None
+            except (ValueError, IndexError):
+                specificity = None
             result[key] = {
                 "validity": r[i_val].strip() or None,
-                "action": r[i_act].strip() or None,
+                "specificity": specificity,
+                "action": r[i_act].strip() if len(r) > i_act else None or None,
                 "details": r[i_det].strip() if len(r) > i_det else "",
                 "helpfulness": helpfulness,
             }
@@ -824,8 +831,7 @@ with tab1:
     st.markdown("""
     <div class="instructions-block">
     <span class="instructions-label">📌 Instructions:</span> Read all feedback sets below, then <strong>assign a unique rank to each one</strong>.
-    Evaluate based on three criteria: <strong>validity</strong> (is the feedback a valid issue/question/suggestion?),
-    <strong>actionability</strong> (can authors act on it?), and <strong>helpfulness</strong> (overall value to the authors).
+    Evaluate based on three criteria: <strong>validity</strong> (is the feedback a valid issue/question/suggestion?), <strong>specificity</strong> (is it anchored to specific parts of the paper?), <strong>actionability</strong> (can authors act on it?), and <strong>helpfulness</strong> (overall value to the authors).
     <strong>Rank 1 = best, rank 3 = worst.</strong>
     </div>
     """, unsafe_allow_html=True)
@@ -1032,7 +1038,7 @@ with tab2:
     st.markdown("---")
 
     # ── QUESTIONS ─────────────────────────────────────────────────────────────
-    q_col1, q_col2, q_col3 = st.columns([1, 1.2, 1], gap="medium")
+    q_col1, q_col2, q_col3, q_col4 = st.columns([1, 1, 1.2, 1], gap="medium")
 
     with q_col1:
         # ── 1. VALIDITY ───────────────────────────────────────────────────────────
@@ -1057,8 +1063,33 @@ with tab2:
         )
 
     with q_col2:
-        # ── 2. ACTION ─────────────────────────────────────────────────────────────
-        st.markdown("##### 2. Action")
+        # ── 2. SPECIFICITY ────────────────────────────────────────────────────────
+        st.markdown("##### 2. Specificity")
+        st.caption("Is the feedback anchored to specific parts of the paper?")
+
+        _spec_opts = [5, 4, 3, 2, 1]
+        _spec_fmt = {
+            1: "1 — Very vague",
+            2: "2 — Mostly vague",
+            3: "3 — Moderately specific",
+            4: "4 — Mostly specific",
+            5: "5 — Very specific",
+        }
+        _cur_spec = existing2.get("specificity")
+        _spec_idx = (5 - _cur_spec) if (_cur_spec is not None and 1 <= _cur_spec <= 5) else None
+
+        specificity = st.radio(
+            "Specificity",
+            options=_spec_opts,
+            index=_spec_idx,
+            format_func=lambda x: _spec_fmt[x],
+            label_visibility="collapsed",
+            key=f"spec_{nav2}",
+        )
+
+    with q_col3:
+        # ── 3. ACTION ─────────────────────────────────────────────────────────────
+        st.markdown("##### 3. Action")
         st.caption("What action are you willing to take?")
 
         _action_opts = [
@@ -1098,9 +1129,9 @@ with tab2:
             label_visibility="visible",
         )
 
-    with q_col3:
-        # ── 3. HELPFULNESS ────────────────────────────────────────────────────────
-        st.markdown("##### 3. Helpfulness")
+    with q_col4:
+        # ── 4. HELPFULNESS ────────────────────────────────────────────────────────
+        st.markdown("##### 4. Helpfulness")
         st.caption("Rate overall value on a 5-point scale.")
 
         _help_opts = [5, 4, 3, 2, 1]
@@ -1136,14 +1167,14 @@ with tab2:
             st.info(toast["msg"])
 
     # ── Save & Next (primary action) ───────────────────────────────────────────
-    can_save = validity is not None and action is not None and helpfulness is not None
+    can_save = validity is not None and specificity is not None and action is not None and helpfulness is not None
 
     bc1, _ = st.columns([2, 8])
     with bc1:
         if st.button("💾 Save & Next →", type="primary", disabled=not can_save, key="save_next_unit"):
-            annot = {"validity": validity, "action": action, "details": details, "helpfulness": helpfulness}
+            annot = {"validity": validity, "specificity": specificity, "action": action, "details": details, "helpfulness": helpfulness}
             st.session_state.unit_annots[unit_key2] = annot
-            ok, err = save_unit_annotation(annotator, paper_id2, source2, unit_text2, validity, action, details, helpfulness)
+            ok, err = save_unit_annotation(annotator, paper_id2, source2, unit_text2, validity, specificity, action, details, helpfulness)
             if ok:
                 st.session_state.last_save_toast = {"ok": True, "msg": "✅ Saved to Google Sheets!", "task": "unit"}
             elif err:
