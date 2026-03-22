@@ -99,6 +99,22 @@ html, body, .stApp {
     margin-bottom: 0.6rem;
 }
 
+/* Task 2: rank slots 1, 2, 3 — letter chosen per slot (outer border via st.container) */
+.rank-slot-num {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--text);
+    margin-bottom: 0.15rem;
+}
+.rank-slot-hint {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-bottom: 0.5rem;
+    line-height: 1.3;
+}
+
 /* Unit card */
 .unit-card {
     background: var(--surface); border: 2px solid var(--accent);
@@ -229,6 +245,62 @@ h1 a, h2 a, h3 a, h4 a, h5 a, h6 a { display: none !important; }
 
 /* Instructions heading in red */
 .instructions-label { color: #dc2626; font-weight: 600; }
+
+/* Completion / thank-you panel */
+.ending-panel {
+    text-align: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem 1.5rem 1.75rem;
+    max-width: 36rem;
+    margin: 0 auto 1rem;
+}
+.ending-panel h2 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--green);
+    margin: 0 0 0.75rem 0;
+}
+.ending-panel p {
+    color: var(--text);
+    font-size: 1rem;
+    line-height: 1.6;
+    margin: 0 0 0.5rem 0;
+}
+.ending-stats {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    margin-top: 0.75rem;
+}
+
+/* All tasks done — explicit “End annotation” CTA */
+.end-annotation-wrap {
+    max-width: 40rem;
+    margin: 0 auto 1.1rem;
+    padding: 1.1rem 1.25rem 1.25rem;
+    text-align: center;
+    background: linear-gradient(180deg, rgba(22,163,74,0.1) 0%, var(--surface) 55%);
+    border: 2px solid var(--green);
+    border-radius: var(--radius);
+    box-shadow: 0 4px 18px rgba(22, 163, 74, 0.12);
+}
+.end-annotation-wrap .end-annotation-title {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--green);
+    margin: 0 0 0.35rem 0;
+    line-height: 1.35;
+}
+.end-annotation-wrap .end-annotation-sub {
+    font-size: 0.95rem;
+    color: var(--text-dim);
+    margin: 0 0 0.85rem 0;
+    line-height: 1.5;
+}
 
 /* Instructions block — larger font, visually separated from paper title */
 .instructions-block {
@@ -642,6 +714,7 @@ def _init():
         "last_save_toast": None,  # {"ok": bool, "msg": str, "task": "ranking"|"unit"}
         "switch_to_tab2": False,  # trigger JS tab switch after rerun
         "_loaded_for_annotator": "",  # tracks which annotator the sheets data belongs to
+        "show_completion_page": False,  # True after user clicks "End annotation" (thank-you page)
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -659,8 +732,9 @@ def _clear_user_state() -> None:
     st.session_state.sets_nav = 0
     st.session_state.units_nav = 0
     st.session_state._loaded_for_annotator = ""
+    st.session_state.show_completion_page = False
     for key in list(st.session_state.keys()):
-        if key.startswith("draft_") or key.startswith("rank_"):
+        if key.startswith(("draft_", "rank_", "rankpos_")):
             del st.session_state[key]
 
 
@@ -734,6 +808,10 @@ n_units_done = sum(
        in st.session_state.unit_annots
 )
 
+task1_complete = assigned_units.empty or (n_units_done >= n_units)
+task2_complete = assigned_sets.empty or (n_sets_done >= n_sets)
+all_annotations_complete = task1_complete and task2_complete
+
 # ── TOP BAR ───────────────────────────────────────────────────────────────────
 col_l, col_bar, col_r = st.columns([1.2, 8, 1.2], vertical_alignment="center")
 with col_bar:
@@ -742,9 +820,9 @@ with col_bar:
       <h1>Human Evaluation of Paper Feedback</h1>
       <span class="progress-info">
         <span style="color:var(--accent); margin-right:1rem;">👤 {html.escape(annotator)}</span>
-        Task 1: {n_sets_done}/{n_sets}
+        Task 1: {n_units_done}/{n_units}
         &nbsp;·&nbsp;
-        Task 2: {n_units_done}/{n_units}
+        Task 2: {n_sets_done}/{n_sets}
       </span>
     </div>
     """, unsafe_allow_html=True)
@@ -758,10 +836,62 @@ with col_r:
 # Space after top bar
 st.markdown("<div style='margin-bottom: 0.5rem;'></div>", unsafe_allow_html=True)
 
+# ── THANK-YOU PAGE (only after user clicks "End annotation") ────────────────
+has_assigned_work = (n_units > 0) or (n_sets > 0)
+if (
+    has_assigned_work
+    and all_annotations_complete
+    and st.session_state.get("show_completion_page", False)
+):
+    _, end_col, _ = st.columns([1, 2, 1])
+    with end_col:
+        st.markdown(
+            f"""
+            <div class="ending-panel">
+              <h2>Thank you — you are done</h2>
+              <p>All assigned work for <strong>Task 1</strong> and <strong>Task 2</strong> is complete.</p>
+              <p class="ending-stats">
+                Task 1: {n_units_done}/{n_units} units · Task 2: {n_sets_done}/{n_sets} papers
+              </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("← Return to annotation interface", use_container_width=True, key="btn_return_annotation"):
+            st.session_state.show_completion_page = False
+            st.rerun()
+    st.stop()
+
+# ── "End annotation" CTA (all work done, not yet on thank-you page) ──────────
+if (
+    has_assigned_work
+    and all_annotations_complete
+    and not st.session_state.get("show_completion_page", False)
+):
+    _, cta_mid, _ = st.columns([0.35, 5, 0.35])
+    with cta_mid:
+        st.markdown(
+            """
+            <div class="end-annotation-wrap">
+              <p class="end-annotation-title">✓ You have completed all assigned Task 1 and Task 2 items</p>
+              <p class="end-annotation-sub">Click <strong>End annotation</strong> below to confirm you are finished.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "End annotation",
+            type="primary",
+            use_container_width=True,
+            key="btn_end_annotation",
+        ):
+            st.session_state.show_completion_page = True
+            st.rerun()
+
 # ── TABS ──────────────────────────────────────────────────────────────────────
 tab1, tab2 = st.tabs([
-    "📋  Task 1 — Rank Feedback Sets",
-    "🔍  Task 2 — Evaluate Feedback Units",
+    "🔍  Task 1 — Evaluate Feedback Units",
+    "📋  Task 2 — Rank Feedback Sets",
 ])
 
 # Auto-switch to Tab 2 when triggered by "Save & Next" on the last Task 1 item
@@ -779,186 +909,11 @@ if st.session_state.get("switch_to_tab2"):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TASK 1 — RANKING
+# TASK 1 — UNIT ANNOTATION
 # ══════════════════════════════════════════════════════════════════════════════
 with tab1:
-    if assigned_sets.empty:
-        st.info(f"No papers are assigned to **{annotator}** for Task 1.")
-        st.stop()
-
-    nav1 = min(st.session_state.sets_nav, len(assigned_sets) - 1)
-    srow = assigned_sets.iloc[nav1]
-    paper_id1 = str(srow["paper_id"])
-    title1 = str(srow.get("title", "") or "").strip()
-
-    shuffled = _shuffled_models(annotator, models)
-    labels = _SET_LABELS[: len(shuffled)]
-    label_to_model = {labels[i]: shuffled[i] for i in range(len(shuffled))}
-    model_to_label = {v: k for k, v in label_to_model.items()}
-
-    # ── Navigation ────────────────────────────────────────────────────────────
-    c_prev, c_pos, c_next = st.columns([2, 3, 2])
-    with c_prev:
-        if st.button("← Prev", disabled=(nav1 == 0), key="sets_prev", use_container_width=True):
-            st.session_state.sets_nav = nav1 - 1
-            st.rerun()
-    with c_pos:
-        is_ranked = paper_id1 in st.session_state.rankings
-        badge_html = '<span class="done-chip">✓ Ranked</span>' if is_ranked else '<span class="todo-chip">Not yet ranked</span>'
-        st.markdown(
-            f"<div class='nav-center'><strong>Paper {nav1 + 1} / {len(assigned_sets)}</strong><br>{badge_html}</div>",
-            unsafe_allow_html=True,
-        )
-    with c_next:
-        if st.button(
-            "Next →",
-            disabled=(nav1 == len(assigned_sets) - 1),
-            key="sets_next",
-            use_container_width=True,
-        ):
-            st.session_state.sets_nav = nav1 + 1
-            st.rerun()
-
-    st.markdown("---")
-
-    # ── Paper info ────────────────────────────────────────────────────────────
-    if title1:
-        st.markdown(
-            f"<div class='paper-title-label'>Paper Title</div><div class='paper-title'>{html.escape(title1)}</div>",
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("""
-    <div class="instructions-block">
-    <span class="instructions-label">📌 Instructions:</span> Read all feedback sets below, then <strong>assign a unique rank to each one</strong>.
-    Evaluate based on three criteria: <strong>validity</strong> (is the feedback a valid issue/question/suggestion?), <strong>specificity</strong> (is it anchored to specific parts of the paper?), <strong>actionability</strong> (can authors act on it?), and <strong>helpfulness</strong> (overall value to the authors).
-    <strong>Rank 1 = best, rank 3 = worst.</strong>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # ── Feedback sets (side-by-side columns) ──────────────────────────────────
-    st.markdown("<div class='sec-heading-center'>📄 Feedback Sets</div>", unsafe_allow_html=True)
-    set_cols = st.columns(len(labels))
-    for col, lbl in zip(set_cols, labels):
-        model = label_to_model[lbl]
-        col_key = f"feedback_set-{model}"
-        text = str(srow.get(col_key, "") or "").strip()
-        with col:
-            st.markdown(
-                f"<div class='fb-card-label'>Set {lbl}</div>",
-                unsafe_allow_html=True,
-            )
-            if text:
-                items = _parse_numbered_items(text)
-                kw_by_unit = {}
-                for idx, itm in enumerate(items):
-                    clean = _NUMBERED_ITEM_RE.sub("", itm).strip()
-                    k = (paper_id1, model, clean)
-                    kw_by_unit[idx] = tfidf_keywords.get(k, frozenset())
-
-                st.markdown(
-                    f"<div class='fb-card'>{_format_feedback_text(text, kw_by_unit)}</div>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.caption("(no content)")
-
-    st.markdown("---")
-
-    # ── Ranking UI ────────────────────────────────────────────
-    st.markdown("<div class='sec-heading-center'>🏆 Your Ranking</div>", unsafe_allow_html=True)
-
-    existing_ranking = st.session_state.rankings.get(paper_id1, [])
-    existing_model_ranks: dict[str, int] = {}
-    for rank_i, mname in enumerate(existing_ranking, start=1):
-        existing_model_ranks[mname] = rank_i
-
-    rank_options: list = [None] + list(range(1, len(shuffled) + 1))
-    rank_fmt = {None: "— select —", **{i: f"{i}{'  (best)' if i == 1 else '  (worst)' if i == len(shuffled) else ''}" for i in range(1, len(shuffled) + 1)}}
-
-    draft_key = f"draft_{paper_id1}"
-    if draft_key not in st.session_state:
-        st.session_state[draft_key] = {m: existing_model_ranks.get(m) for m in shuffled}
-        # Sync widget state keys so Streamlit doesn't use stale values from a previous session
-        for _lbl, _model in label_to_model.items():
-            st.session_state[f"rank_{paper_id1}_{_lbl}"] = existing_model_ranks.get(_model)
-
-    rank_cols = st.columns(len(shuffled))
-    assigned_ranks: dict[str, int] = {}
-    for i, (lbl, model) in enumerate(label_to_model.items()):
-        with rank_cols[i]:
-            current_val = st.session_state[draft_key].get(model)
-            idx = rank_options.index(current_val) if current_val in rank_options else 0
-            chosen = st.selectbox(
-                f"Set {lbl}",
-                options=rank_options,
-                format_func=lambda x, rf=rank_fmt: rf.get(x, "—"),
-                index=idx,
-                key=f"rank_{paper_id1}_{lbl}",
-            )
-            st.session_state[draft_key][model] = chosen
-            if chosen is not None:
-                assigned_ranks[model] = chosen
-
-    all_filled = len(assigned_ranks) == len(shuffled)
-    all_unique = len(set(assigned_ranks.values())) == len(assigned_ranks)
-
-    if all_filled and not all_unique:
-        st.warning("⚠️ Each rank must be unique. Adjust your ranking before submitting.")
-
-    is_last_paper = (nav1 == len(assigned_sets) - 1)
-    btn_label = "💾 Save & Go to Task 2 →" if is_last_paper else "💾 Save & Next →"
-
-    save_c, status_c = st.columns([2, 6])
-    with save_c:
-        if st.button(
-            btn_label,
-            type="primary",
-            disabled=(not all_filled or not all_unique),
-            key="submit_ranking",
-        ):
-            sorted_models = [m for m, _ in sorted(assigned_ranks.items(), key=lambda x: x[1])]
-            st.session_state.rankings[paper_id1] = sorted_models
-            ok, err = save_ranking(annotator, paper_id1, sorted_models)
-            if ok:
-                st.session_state.last_save_toast = {"ok": True, "msg": "✅ Ranking saved to Google Sheets!", "task": "ranking"}
-            elif err:
-                st.session_state.last_save_toast = {"ok": False, "msg": f"❌ Save failed: {err}", "task": "ranking"}
-            else:
-                st.session_state.last_save_toast = {"ok": None, "msg": "💾 Ranking saved locally (Google Sheets not configured).", "task": "ranking"}
-            if is_last_paper:
-                st.session_state.units_nav = 0
-                st.session_state.switch_to_tab2 = True
-            else:
-                st.session_state.sets_nav = nav1 + 1
-            st.rerun()
-
-    # ── Persistent save status banner ─────────────────────────────────────────
-    toast = st.session_state.get("last_save_toast")
-    if toast and toast.get("task") == "ranking":
-        with status_c:
-            if toast["ok"] is True:
-                st.success(toast["msg"])
-            elif toast["ok"] is False:
-                st.error(toast["msg"])
-            else:
-                st.info(toast["msg"])
-
-    # Show saved ranking summary
-    if paper_id1 in st.session_state.rankings:
-        saved = st.session_state.rankings[paper_id1]
-        summary = " → ".join([f"**Set {model_to_label.get(m, m)}**" for m in saved])
-        st.markdown(f"**Saved ranking (best → worst):** {summary}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TASK 2 — UNIT ANNOTATION
-# ══════════════════════════════════════════════════════════════════════════════
-with tab2:
     if assigned_units.empty:
-        st.info(f"No feedback units are assigned to **{annotator}** for Task 2.")
+        st.info(f"No feedback units are assigned to **{annotator}** for Task 1.")
         st.stop()
 
     nav2 = min(st.session_state.units_nav, len(assigned_units) - 1)
@@ -1028,6 +983,14 @@ with tab2:
             unsafe_allow_html=True,
         )
     st.caption(f"`paper_id: {paper_id2}`")
+
+    st.markdown("""
+    <div class="instructions-block">
+    <span class="instructions-label">📌 Instructions:</span> Below is <strong>a piece of feedback on your paper</strong>. Read it, then <strong>evaluate</strong> it using the four sections that follow: <strong>validity</strong>, <strong>specificity</strong>, <strong>action</strong>, and <strong>helpfulness</strong>.
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
 
     st.markdown(f"""
     <div class="unit-card">
@@ -1106,7 +1069,7 @@ with tab2:
             "point_to_existing_content": "Already addresses this; point to section/table.",
             "no_revision_accept": "Valid but make no change/no deferral.",
             "no_revision_contest": "Dispute or reject and make no change.",
-            "no_action_other": "No action for another reason.",
+            "no_action_other": "No action for another reason (please specify in Details below).",
         }
         _cur_action = existing2.get("action")
         _action_idx = _action_opts.index(_cur_action) if _cur_action in _action_opts else None
@@ -1123,7 +1086,7 @@ with tab2:
         details = st.text_area(
             "Details",
             value=existing2.get("details", ""),
-            placeholder="Short description of the action or reason for no action",
+            placeholder="Short description of the action or reason for no action (required for 'another reason')",
             height=80,
             key=f"details_{nav2}",
             label_visibility="visible",
@@ -1132,7 +1095,7 @@ with tab2:
     with q_col4:
         # ── 4. HELPFULNESS ────────────────────────────────────────────────────────
         st.markdown("##### 4. Helpfulness")
-        st.caption("Rate overall value on a 5-point scale.")
+        st.caption("How useful is the feedback overall to the authors?")
 
         _help_opts = [5, 4, 3, 2, 1]
         _help_fmt = {
@@ -1167,11 +1130,16 @@ with tab2:
             st.info(toast["msg"])
 
     # ── Save & Next (primary action) ───────────────────────────────────────────
-    can_save = validity is not None and specificity is not None and action is not None and helpfulness is not None
+    can_save_basic = validity is not None and specificity is not None and action is not None and helpfulness is not None
+    details_needed = action == "no_action_other" and not details.strip()
+    can_save = can_save_basic and not details_needed
+
+    is_last_unit = (nav2 == len(assigned_units) - 1)
+    btn_label = "💾 Save & Go to Task 2 →" if is_last_unit else "💾 Save & Next →"
 
     bc1, _ = st.columns([2, 8])
     with bc1:
-        if st.button("💾 Save & Next →", type="primary", disabled=not can_save, key="save_next_unit"):
+        if st.button(btn_label, type="primary", disabled=not can_save, key="save_next_unit"):
             annot = {"validity": validity, "specificity": specificity, "action": action, "details": details, "helpfulness": helpfulness}
             st.session_state.unit_annots[unit_key2] = annot
             ok, err = save_unit_annotation(annotator, paper_id2, source2, unit_text2, validity, specificity, action, details, helpfulness)
@@ -1181,8 +1149,209 @@ with tab2:
                 st.session_state.last_save_toast = {"ok": False, "msg": f"❌ Save failed: {err}", "task": "unit"}
             else:
                 st.session_state.last_save_toast = {"ok": None, "msg": "💾 Saved locally (Google Sheets not configured).", "task": "unit"}
-            st.session_state.units_nav = min(len(assigned_units) - 1, nav2 + 1)
+            
+            if is_last_unit:
+                st.session_state.sets_nav = 0
+                st.session_state.switch_to_tab2 = True
+            else:
+                st.session_state.units_nav = nav2 + 1
             st.rerun()
 
     if not can_save:
-        st.caption("⚠️ Complete all three sections (validity, action, helpfulness) to enable saving.")
+        if details_needed:
+            st.warning("⚠️ Please provide reason in 'Details' for selecting 'no_action_other'.")
+        else:
+            st.caption("⚠️ Complete all three sections (validity, action, helpfulness) to enable saving.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TASK 2 — RANKING
+# ══════════════════════════════════════════════════════════════════════════════
+with tab2:
+    if assigned_sets.empty:
+        st.info(f"No papers are assigned to **{annotator}** for Task 2.")
+        st.stop()
+
+    nav1 = min(st.session_state.sets_nav, len(assigned_sets) - 1)
+    srow = assigned_sets.iloc[nav1]
+    paper_id1 = str(srow["paper_id"])
+    title1 = str(srow.get("title", "") or "").strip()
+
+    shuffled = _shuffled_models(annotator, models)
+    labels = _SET_LABELS[: len(shuffled)]
+    label_to_model = {labels[i]: shuffled[i] for i in range(len(shuffled))}
+    model_to_label = {v: k for k, v in label_to_model.items()}
+
+    # ── Navigation ────────────────────────────────────────────────────────────
+    c_prev, c_pos, c_next = st.columns([2, 3, 2])
+    with c_prev:
+        if st.button("← Prev", disabled=(nav1 == 0), key="sets_prev", use_container_width=True):
+            st.session_state.sets_nav = nav1 - 1
+            st.rerun()
+    with c_pos:
+        is_ranked = paper_id1 in st.session_state.rankings
+        badge_html = '<span class="done-chip">✓ Ranked</span>' if is_ranked else '<span class="todo-chip">Not yet ranked</span>'
+        st.markdown(
+            f"<div class='nav-center'><strong>Paper {nav1 + 1} / {len(assigned_sets)}</strong><br>{badge_html}</div>",
+            unsafe_allow_html=True,
+        )
+    with c_next:
+        if st.button(
+            "Next →",
+            disabled=(nav1 == len(assigned_sets) - 1),
+            key="sets_next",
+            use_container_width=True,
+        ):
+            st.session_state.sets_nav = nav1 + 1
+            st.rerun()
+
+    st.markdown("---")
+
+    # ── Paper info ────────────────────────────────────────────────────────────
+    if title1:
+        st.markdown(
+            f"<div class='paper-title-label'>Paper Title</div><div class='paper-title'>{html.escape(title1)}</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("""
+    <div class="instructions-block">
+    <span class="instructions-label">📌 Instructions:</span>Read all feedback sets below (Sets A, B, and C), then <strong>rank them according to four criteria</strong>: <strong>validity</strong> (is the feedback a valid 
+issue/question/suggestion?), <strong>specificity</strong> (is it anchored to specific parts of the 
+paper?), <strong>actionability</strong> (can the authors clearly act on it?), and <strong>helpfulness</strong> (how useful is it overall to the authors?). Each set letter must be used exactly once.
+    
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Feedback sets (side-by-side columns) ──────────────────────────────────
+    st.markdown("<div class='sec-heading-center'>📄 Feedback Sets</div>", unsafe_allow_html=True)
+    set_cols = st.columns(len(labels))
+    for col, lbl in zip(set_cols, labels):
+        model = label_to_model[lbl]
+        col_key = f"feedback_set-{model}"
+        text = str(srow.get(col_key, "") or "").strip()
+        with col:
+            st.markdown(
+                f"<div class='fb-card-label'>Set {lbl}</div>",
+                unsafe_allow_html=True,
+            )
+            if text:
+                items = _parse_numbered_items(text)
+                kw_by_unit = {}
+                for idx, itm in enumerate(items):
+                    clean = _NUMBERED_ITEM_RE.sub("", itm).strip()
+                    k = (paper_id1, model, clean)
+                    kw_by_unit[idx] = tfidf_keywords.get(k, frozenset())
+
+                st.markdown(
+                    f"<div class='fb-card'>{_format_feedback_text(text, kw_by_unit)}</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("(no content)")
+
+    st.markdown("---")
+
+    # ── Ranking UI (rank slots 1…N left→right; pick set letter per slot) ─────
+    st.markdown("<div class='sec-heading-center'>🏆 Your Ranking</div>", unsafe_allow_html=True)
+
+    existing_ranking = st.session_state.rankings.get(paper_id1, [])
+
+    label_options: list = [None] + list(labels)
+    label_fmt = {None: "— select —", **{lb: f"Set {lb}" for lb in labels}}
+
+    draft_rankpos_key = f"draft_rankpos_{paper_id1}"
+    if draft_rankpos_key not in st.session_state:
+        st.session_state[draft_rankpos_key] = {}
+        for rank_num in range(1, len(shuffled) + 1):
+            lbl0 = None
+            if rank_num - 1 < len(existing_ranking):
+                m0 = existing_ranking[rank_num - 1]
+                lbl0 = model_to_label.get(m0)
+            st.session_state[draft_rankpos_key][rank_num] = lbl0
+            st.session_state[f"rankpos_{paper_id1}_{rank_num}"] = lbl0
+
+    rank_cols = st.columns(len(shuffled))
+    rank_to_label: dict[int, str | None] = {}
+    for rank_idx, rank_num in enumerate(range(1, len(shuffled) + 1)):
+        n = len(shuffled)
+        if rank_num == 1:
+            hint = "best"
+        elif rank_num == n:
+            hint = "worst"
+        else:
+            hint = ""
+        with rank_cols[rank_idx]:
+            hint_part = (
+                f"<div class='rank-slot-hint'>{html.escape(hint)}</div>"
+                if hint
+                else "<div class='rank-slot-hint'>&nbsp;</div>"
+            )
+            with st.container(border=True):
+                st.markdown(
+                    f"<div style='text-align:center;margin-bottom:0.35rem'>"
+                    f"<div class='rank-slot-num'>{rank_num}</div>{hint_part}</div>",
+                    unsafe_allow_html=True,
+                )
+                current_val = st.session_state[draft_rankpos_key].get(rank_num)
+                idx = label_options.index(current_val) if current_val in label_options else 0
+                chosen = st.selectbox(
+                    "",
+                    options=label_options,
+                    format_func=lambda x, rf=label_fmt: rf.get(x, "—"),
+                    index=idx,
+                    key=f"rankpos_{paper_id1}_{rank_num}",
+                )
+            st.session_state[draft_rankpos_key][rank_num] = chosen
+            rank_to_label[rank_num] = chosen
+
+    labels_in_order = [rank_to_label[r] for r in range(1, len(shuffled) + 1)]
+    all_filled = all(x is not None for x in labels_in_order)
+    all_unique = len(set(labels_in_order)) == len(labels_in_order) if all_filled else False
+
+    if all_filled and not all_unique:
+        st.warning("⚠️ Each feedback set (A, B, C, …) must be chosen exactly once. Adjust before submitting.")
+
+    is_last_paper = (nav1 == len(assigned_sets) - 1)
+    btn_label = "💾 Save & Next →"
+
+    save_c, status_c = st.columns([2, 6])
+    with save_c:
+        if st.button(
+            btn_label,
+            type="primary",
+            disabled=(not all_filled or not all_unique),
+            key="submit_ranking",
+        ):
+            sorted_models = [label_to_model[lb] for lb in labels_in_order]
+            st.session_state.rankings[paper_id1] = sorted_models
+            ok, err = save_ranking(annotator, paper_id1, sorted_models)
+            if ok:
+                st.session_state.last_save_toast = {"ok": True, "msg": "✅ Ranking saved to Google Sheets!", "task": "ranking"}
+            elif err:
+                st.session_state.last_save_toast = {"ok": False, "msg": f"❌ Save failed: {err}", "task": "ranking"}
+            else:
+                st.session_state.last_save_toast = {"ok": None, "msg": "💾 Ranking saved locally (Google Sheets not configured).", "task": "ranking"}
+            
+            if not is_last_paper:
+                st.session_state.sets_nav = nav1 + 1
+            st.rerun()
+
+    # ── Persistent save status banner ─────────────────────────────────────────
+    toast = st.session_state.get("last_save_toast")
+    if toast and toast.get("task") == "ranking":
+        with status_c:
+            if toast["ok"] is True:
+                st.success(toast["msg"])
+            elif toast["ok"] is False:
+                st.error(toast["msg"])
+            else:
+                st.info(toast["msg"])
+
+    # Show saved ranking summary
+    if paper_id1 in st.session_state.rankings:
+        saved = st.session_state.rankings[paper_id1]
+        summary = " → ".join([f"**Set {model_to_label.get(m, m)}**" for m in saved])
+        st.markdown(f"**Saved ranking (best → worst):** {summary}")
