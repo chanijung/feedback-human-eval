@@ -3,3 +3,5 @@
 data/fb_units_eval-*.csv
 __pycache__/
 fb_sets_comparison-*.csv
+data/old/*
+*.mdc
