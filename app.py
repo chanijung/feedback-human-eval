@@ -10,7 +10,6 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 import gspread
-from sklearn.feature_extraction.text import TfidfVectorizer
 from gspread.exceptions import WorksheetNotFound
 from google.oauth2 import service_account
 
@@ -62,7 +61,66 @@ html, body, .stApp {
     font-family: 'IBM Plex Mono', monospace; font-size: 1.15rem;
     font-weight: 700; color: var(--accent); margin: 0;
 }
-.progress-info { font-family: 'IBM Plex Mono', monospace; font-size: 0.78rem; color: var(--text-dim); }
+.progress-info {
+    font-family: 'IBM Plex Mono', monospace;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem 1rem;
+    font-size: 0.82rem;
+    color: var(--text-dim);
+}
+/* Task 1/2 progress bars (top bar) */
+.progress-bars-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    width: min(26rem, 100%);
+    min-width: 12rem;
+}
+.task-progress-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+}
+.task-progress-label {
+    flex: 0 0 4.75rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: #b91c1c;
+    text-align: left;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    line-height: 1.2;
+}
+.progress-track {
+    flex: 1;
+    height: 12px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    overflow: hidden;
+    min-width: 0;
+}
+.progress-fill {
+    height: 100%;
+    border-radius: 6px;
+    background: linear-gradient(90deg, #ef4444 0%, #b91c1c 100%);
+    transition: width 0.4s ease;
+    box-sizing: border-box;
+}
+.task-progress-count {
+    flex: 0 0 auto;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #b91c1c;
+    min-width: 2.75rem;
+    text-align: right;
+    line-height: 1.2;
+}
 
 /* Feedback card (for sets display) */
 .fb-card {
@@ -536,6 +594,34 @@ def _get_assigned(df: pd.DataFrame, username: str) -> pd.DataFrame:
     return df[df["annotators"].apply(contains)].reset_index(drop=True)
 
 
+def _annotator_display_name(username: str, assigned_sets: pd.DataFrame, assigned_units: pd.DataFrame) -> str:
+    """Token from CSV `annotators` that matches username (case-insensitive), preserving original spelling."""
+    u = username.strip().lower()
+    if not u:
+        return username.strip()
+    for df in (assigned_sets, assigned_units):
+        if df is None or df.empty or "annotators" not in df.columns:
+            continue
+        for _, row in df.iterrows():
+            raw = str(row.get("annotators", "") or "")
+            for part in raw.split(","):
+                tok = part.strip()
+                if tok and tok.lower() == u:
+                    return tok
+    return username.strip()
+
+
+def _first_unannotated_unit_pos(assigned_units: pd.DataFrame) -> int | None:
+    """Row index in assigned_units for the first unit without a saved annotation, or None if all done."""
+    if assigned_units.empty:
+        return None
+    for pos, (_, row) in enumerate(assigned_units.iterrows()):
+        k = (str(row["paper_id"]), str(row["feedback_source"]), str(row["feedback_unit"]).strip())
+        if k not in st.session_state.unit_annots:
+            return pos
+    return None
+
+
 def _shuffled_models(annotator: str, models: list[str]) -> list[str]:
     """Deterministically shuffle model order per annotator to reduce position bias."""
     seed = int(hashlib.md5(annotator.lower().encode()).hexdigest(), 16) % (2 ** 32)
@@ -545,156 +631,16 @@ def _shuffled_models(annotator: str, models: list[str]) -> list[str]:
     return [models[i] for i in order]
 
 
-_NUMBERED_ITEM_RE = re.compile(r"^\d+[\.\)]\s+")
-
-
-def _parse_numbered_items(text: str) -> list[str]:
-    """Split a feedback text into individual numbered items."""
-    items: list[str] = []
-    current: list[str] = []
-    for line in text.strip().split("\n"):
-        if _NUMBERED_ITEM_RE.match(line):
-            if current:
-                items.append(" ".join(current))
-            current = [line]
-        elif line.strip() and current:
-            current.append(line.strip())
-    if current:
-        items.append(" ".join(current))
-    return items
-
-
-@st.cache_data
-def _compute_tfidf_keywords(
-    mtime: float, _df: pd.DataFrame, units_mtime: float = 0.0, _df_units: pd.DataFrame | None = None, top_k: int = 5
-) -> dict[tuple, frozenset]:
-    """Return {(paper_id, model, unit_idx): frozenset[keyword]} for all feedback units.
-
-    Each numbered feedback item is one document. TF-IDF is fit across all items
-    so that corpus-wide rare (but item-specific) terms score highest.
-    binary=True is used because items are short (TF ≈ 0/1 anyway).
-    Also incorporates individual units from df_units (e.g. Llama, Olmo) so
-    those units receive TF-IDF keyword highlights as well.
-    """
-    records: list[tuple[str, str, int, str]] = []
-    for _, row in _df.iterrows():
-        paper_id = str(row["paper_id"])
-        for col in [c for c in _df.columns if c.startswith("feedback_set-")]:
-            model = col.replace("feedback_set-", "")
-            text = str(row.get(col, "") or "").strip()
-            if not text:
-                continue
-            for idx, item_text in enumerate(_parse_numbered_items(text)):
-                # Strip the leading "1. " or "1) " before using as a key
-                clean_item = _NUMBERED_ITEM_RE.sub("", item_text).strip()
-                records.append((paper_id, model, idx, clean_item))
-
-    # Also add individual feedback units from df_units (covers models not in df_sets)
-    if _df_units is not None and not _df_units.empty:
-        for _, row in _df_units.iterrows():
-            paper_id = str(row["paper_id"])
-            model = str(row.get("feedback_source", "") or "").strip()
-            unit_text = str(row.get("feedback_unit", "") or "").strip()
-            if model and unit_text:
-                records.append((paper_id, model, 0, unit_text))
-
-    if not records:
-        return {}
-
-    texts = [r[3] for r in records]
-    base_kwargs = dict(
-        binary=True,
-        max_df=0.85,
-        stop_words="english",
-        token_pattern=r"[a-zA-Z]{3,}",
-    )
-    # (ngram_range, min_df) pairs: unigrams filter more aggressively to reduce noise
-    ngram_configs = [((1, 1), 0.01), ((2, 2), 0.01)]
-
-    result: dict[tuple, frozenset] = {}
-    for ngram_range, min_df in ngram_configs:
-        try:
-            vec = TfidfVectorizer(**base_kwargs, ngram_range=ngram_range, min_df=min_df)
-            tfidf = vec.fit_transform(texts)
-        except ValueError:
-            continue
-        feature_names = vec.get_feature_names_out()
-        for i, (paper_id, model, unit_idx, item_text) in enumerate(records):
-            scores = tfidf[i].toarray()[0]
-            top_idx = scores.argsort()[-top_k:][::-1]
-            kws = frozenset(feature_names[j] for j in top_idx if scores[j] > 0)
-            # key is (paper_id, model, clean_item_text)
-            key = (paper_id, model, item_text)
-            result[key] = result.get(key, frozenset()) | kws
-    return result
-
-
-def _highlight_keywords(escaped_text: str, keywords: frozenset) -> str:
-    """Wrap keyword occurrences with <strong>, handling overlapping matches.
-
-    All match spans are collected first, then overlapping/adjacent spans are
-    merged, so overlapping bigrams produce one contiguous <strong> block with
-    no nested tags (e.g. 'selection bias' + 'bias caused' → <strong>selection
-    bias caused</strong>).
-    """
-    if not keywords:
-        return escaped_text
-
-    spans: list[tuple[int, int]] = []
-    for kw in keywords:
-        for m in re.finditer(r"\b" + re.escape(kw) + r"\b", escaped_text, flags=re.IGNORECASE):
-            spans.append((m.start(), m.end()))
-
-    if not spans:
-        return escaped_text
-
-    spans.sort()
-    merged: list[list[int]] = [list(spans[0])]
-    for start, end in spans[1:]:
-        if start <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], end)
-        else:
-            merged.append([start, end])
-
-    parts: list[str] = []
-    prev = 0
-    for start, end in merged:
-        parts.append(escaped_text[prev:start])
-        parts.append(f"<strong>{escaped_text[start:end]}</strong>")
-        prev = end
-    parts.append(escaped_text[prev:])
-    return "".join(parts)
-
-
-def _format_feedback_text(
-    text: str,
-    keywords_by_unit: dict[int, frozenset] | None = None,
-) -> str:
-    """Render plain feedback text as safe HTML with explicit line spacing.
-
-    If keywords_by_unit is provided ({unit_idx: frozenset[word]}), high-TF-IDF
-    terms in each numbered item are wrapped in <strong>.
-    """
+def _format_feedback_text(text: str) -> str:
+    """Render plain feedback text as safe HTML with explicit line spacing."""
     safe = html.escape(text).strip()
     if not safe:
         return ""
-
     lines = safe.split("\n")
-    if not keywords_by_unit:
-        return "".join(
-            f"<div class='fb-line'>{line if line.strip() else '&nbsp;'}</div>"
-            for line in lines
-        )
-
-    unit_idx = -1
-    out: list[str] = []
-    for line in lines:
-        if _NUMBERED_ITEM_RE.match(line):
-            unit_idx += 1
-            kws = keywords_by_unit.get(unit_idx, frozenset())
-            line = _highlight_keywords(line, kws)
-        out.append(f"<div class='fb-line'>{line if line.strip() else '&nbsp;'}</div>")
-    return "".join(out)
+    return "".join(
+        f"<div class='fb-line'>{line if line.strip() else '&nbsp;'}</div>"
+        for line in lines
+    )
 
 
 _SET_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H"]
@@ -711,8 +657,9 @@ def _init():
         "rankings": {},        # {paper_id: [model_rank1, ...]}
         "unit_annots": {},     # {(paper_id, source, unit_text): {validity, action, details, helpfulness}}
         "sheets_loaded": False,
-        "last_save_toast": None,  # {"ok": bool, "msg": str, "task": "ranking"|"unit"}
-        "switch_to_tab2": False,  # trigger JS tab switch after rerun
+        "last_save_toast": None,  # {"ok", "msg", "task": "ranking"|"unit"; unit task also "unit_key"}
+        "switch_to_tab2": False,  # trigger JS tab switch after rerun (→ Task 2)
+        "switch_to_tab1": False,  # after last Task 2 save, if Task 1 incomplete (→ Task 1)
         "_loaded_for_annotator": "",  # tracks which annotator the sheets data belongs to
         "show_completion_page": False,  # True after user clicks "End annotation" (thank-you page)
     }
@@ -733,6 +680,8 @@ def _clear_user_state() -> None:
     st.session_state.units_nav = 0
     st.session_state._loaded_for_annotator = ""
     st.session_state.show_completion_page = False
+    st.session_state.switch_to_tab2 = False
+    st.session_state.switch_to_tab1 = False
     for key in list(st.session_state.keys()):
         if key.startswith(("draft_", "rank_", "rankpos_")):
             del st.session_state[key]
@@ -748,14 +697,21 @@ if _current and st.session_state.get("_loaded_for_annotator", "") not in ("", _c
 if not st.session_state.annotator:
     _, mid, _ = st.columns([1, 2, 1])
     with mid:
-        st.markdown("## 👤 Enter your FIRST NAME to begin")
-        # st.caption("Your name is recorded with every annotation.")
-        name = st.text_input("Name", placeholder="e.g. chani", label_visibility="collapsed")
+        st.markdown("## 👤 Enter your NAME that you entered in the form to begin")
+        name = st.text_input("Name", placeholder="e.g. Chani Jung", label_visibility="collapsed")
         if st.button("Continue →", type="primary"):
             if name.strip():
-                st.session_state.annotator = name.strip()
-                st.query_params["annotator"] = name.strip()
-                st.rerun()
+                cand = name.strip()
+                _df_s = _load_sets(_SETS_PATH.stat().st_mtime if _SETS_PATH.exists() else 0.0)
+                _df_u = _load_units(_UNITS_PATH.stat().st_mtime if _UNITS_PATH.exists() else 0.0)
+                _assigned_s = _get_assigned(_df_s, cand)
+                _assigned_u = _get_assigned(_df_u, cand)
+                if _assigned_s.empty and _assigned_u.empty:
+                    st.error("Wrong annotator name. Try with another name.")
+                else:
+                    st.session_state.annotator = cand
+                    st.query_params["annotator"] = cand
+                    st.rerun()
             else:
                 st.warning("Please enter your name.")
     st.stop()
@@ -766,12 +722,21 @@ annotator: str = st.session_state.annotator
 df_sets = _load_sets(_SETS_PATH.stat().st_mtime if _SETS_PATH.exists() else 0.0)
 df_units = _load_units(_UNITS_PATH.stat().st_mtime if _UNITS_PATH.exists() else 0.0)
 
-_sets_mtime = _SETS_PATH.stat().st_mtime if _SETS_PATH.exists() else 0.0
-_units_mtime = _UNITS_PATH.stat().st_mtime if _UNITS_PATH.exists() else 0.0
-tfidf_keywords = _compute_tfidf_keywords(_sets_mtime, df_sets, _units_mtime, df_units)
-
 assigned_sets = _get_assigned(df_sets, annotator)
 assigned_units = _get_assigned(df_units, annotator)
+
+if annotator and assigned_sets.empty and assigned_units.empty:
+    _, mid_bad, _ = st.columns([1, 2, 1])
+    with mid_bad:
+        st.error("Wrong annotator name. Try with another name.")
+        if st.button("Try again", key="invalid_annotator_clear", type="primary"):
+            st.session_state.annotator = ""
+            st.query_params.pop("annotator", None)
+            _clear_user_state()
+            st.rerun()
+    st.stop()
+
+annotator_display = _annotator_display_name(annotator, assigned_sets, assigned_units)
 
 models = _model_names(df_sets)
 
@@ -813,16 +778,34 @@ task2_complete = assigned_sets.empty or (n_sets_done >= n_sets)
 all_annotations_complete = task1_complete and task2_complete
 
 # ── TOP BAR ───────────────────────────────────────────────────────────────────
+_t1_pct = min(100.0, (100.0 * n_units_done / n_units)) if n_units > 0 else 100.0
+_t2_pct = min(100.0, (100.0 * n_sets_done / n_sets)) if n_sets > 0 else 100.0
+_t1_title = html.escape(f"Task 1: {n_units_done}/{n_units} units")
+_t2_title = html.escape(f"Task 2: {n_sets_done}/{n_sets} papers")
+
 col_l, col_bar, col_r = st.columns([1.2, 8, 1.2], vertical_alignment="center")
 with col_bar:
     st.markdown(f"""
     <div class="top-bar">
       <h1>Human Evaluation of Paper Feedback</h1>
       <span class="progress-info">
-        <span style="color:var(--accent); margin-right:1rem;">👤 {html.escape(annotator)}</span>
-        Task 1: {n_units_done}/{n_units}
-        &nbsp;·&nbsp;
-        Task 2: {n_sets_done}/{n_sets}
+        <span style="color:var(--accent);">👤 {html.escape(annotator_display)}</span>
+        <div class="progress-bars-wrap">
+          <div class="task-progress-row">
+            <span class="task-progress-label">Task 1</span>
+            <div class="progress-track" title="{_t1_title}" role="progressbar" aria-valuenow="{n_units_done}" aria-valuemin="0" aria-valuemax="{n_units}">
+              <div class="progress-fill" style="width: {_t1_pct:.1f}%;"></div>
+            </div>
+            <span class="task-progress-count">{n_units_done}/{n_units}</span>
+          </div>
+          <div class="task-progress-row">
+            <span class="task-progress-label">Task 2</span>
+            <div class="progress-track" title="{_t2_title}" role="progressbar" aria-valuenow="{n_sets_done}" aria-valuemin="0" aria-valuemax="{n_sets}">
+              <div class="progress-fill" style="width: {_t2_pct:.1f}%;"></div>
+            </div>
+            <span class="task-progress-count">{n_sets_done}/{n_sets}</span>
+          </div>
+        </div>
       </span>
     </div>
     """, unsafe_allow_html=True)
@@ -894,18 +877,30 @@ tab1, tab2 = st.tabs([
     "📋  Task 2 — Rank Feedback Sets",
 ])
 
-# Auto-switch to Tab 2 when triggered by "Save & Next" on the last Task 1 item
+# Auto-switch tabs when triggered (Task 1 last save → Tab 2; last Task 2 save with missing Task 1 → Tab 1)
+_tab_switch_index: int | None = None
 if st.session_state.get("switch_to_tab2"):
     st.session_state.switch_to_tab2 = False
+    _tab_switch_index = 1
+elif st.session_state.get("switch_to_tab1"):
+    st.session_state.switch_to_tab1 = False
+    _tab_switch_index = 0
+if _tab_switch_index is not None:
     import streamlit.components.v1 as components
-    components.html("""
+
+    components.html(
+        """
     <script>
     setTimeout(function() {
         const tabs = window.parent.document.querySelectorAll('[data-baseweb="tab"]');
-        if (tabs.length > 1) tabs[1].click();
+        const i = %d;
+        if (tabs.length > i) tabs[i].click();
     }, 200);
     </script>
-    """, height=0)
+    """
+        % _tab_switch_index,
+        height=0,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -968,11 +963,10 @@ with tab1:
     c_jump, _ = st.columns([2.5, 4.5])
     with c_jump:
         if st.button("⏭ Jump to first unannotated", type="primary", key="jump_unannotated", use_container_width=True):
-            for pos, (_, row) in enumerate(assigned_units.iterrows()):
-                k = (str(row["paper_id"]), str(row["feedback_source"]), str(row["feedback_unit"]).strip())
-                if k not in st.session_state.unit_annots:
-                    st.session_state.units_nav = pos
-                    st.rerun()
+            pos = _first_unannotated_unit_pos(assigned_units)
+            if pos is not None:
+                st.session_state.units_nav = pos
+                st.rerun()
 
     st.markdown("---")
 
@@ -982,11 +976,11 @@ with tab1:
             f"<div class='paper-title-label'>Paper Title</div><div class='paper-title'>{html.escape(title2)}</div>",
             unsafe_allow_html=True,
         )
-    st.caption(f"`paper_id: {paper_id2}`")
+    # st.caption(f"`paper_id: {paper_id2}`")
 
     st.markdown("""
     <div class="instructions-block">
-    <span class="instructions-label">📌 Instructions:</span> Below is <strong>a piece of feedback on your paper</strong>. Read it, then <strong>evaluate</strong> it using the four sections that follow: <strong>validity</strong>, <strong>specificity</strong>, <strong>action</strong>, and <strong>helpfulness</strong>.
+    <span class="instructions-label">📌 Instructions:</span> Below is a piece of <strong>feedback on your paper</strong>. <strong>Evaluate</strong> it using the four sections that follow: <strong>validity</strong>, <strong>specificity</strong>, <strong>action</strong>, and <strong>helpfulness</strong>.
     </div>
     """, unsafe_allow_html=True)
 
@@ -994,7 +988,7 @@ with tab1:
 
     st.markdown(f"""
     <div class="unit-card">
-      <div class="unit-text">{_highlight_keywords(html.escape(unit_text2), tfidf_keywords.get((paper_id2, source2, unit_text2.strip()), frozenset()))}</div>
+      <div class="unit-text">{html.escape(unit_text2)}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1119,9 +1113,9 @@ with tab1:
 
     st.markdown("---")
 
-    # ── Persistent save status banner ─────────────────────────────────────────
+    # ── Save status banner (only for the unit it was triggered on) ─────────────
     toast = st.session_state.get("last_save_toast")
-    if toast and toast.get("task") == "unit":
+    if toast and toast.get("task") == "unit" and toast.get("unit_key") == unit_key2:
         if toast["ok"] is True:
             st.success(toast["msg"])
         elif toast["ok"] is False:
@@ -1144,24 +1138,41 @@ with tab1:
             st.session_state.unit_annots[unit_key2] = annot
             ok, err = save_unit_annotation(annotator, paper_id2, source2, unit_text2, validity, specificity, action, details, helpfulness)
             if ok:
-                st.session_state.last_save_toast = {"ok": True, "msg": "✅ Saved to Google Sheets!", "task": "unit"}
+                st.session_state.last_save_toast = {
+                    "ok": True,
+                    "msg": "✅ Response saved!",
+                    "task": "unit",
+                    "unit_key": unit_key2,
+                }
             elif err:
-                st.session_state.last_save_toast = {"ok": False, "msg": f"❌ Save failed: {err}", "task": "unit"}
+                st.session_state.last_save_toast = {
+                    "ok": False,
+                    "msg": f"❌ Save failed: {err}",
+                    "task": "unit",
+                    "unit_key": unit_key2,
+                }
             else:
-                st.session_state.last_save_toast = {"ok": None, "msg": "💾 Saved locally (Google Sheets not configured).", "task": "unit"}
-            
-            if is_last_unit:
-                st.session_state.sets_nav = 0
-                st.session_state.switch_to_tab2 = True
-            else:
-                st.session_state.units_nav = nav2 + 1
+                st.session_state.last_save_toast = {
+                    "ok": None,
+                    "msg": "💾 Saved locally (Google Sheets not configured).",
+                    "task": "unit",
+                    "unit_key": unit_key2,
+                }
+
+            # Only leave this unit after a successful persist (or non-error local path); stay here on sheet errors so the toast is visible.
+            if ok or err is None:
+                if is_last_unit:
+                    st.session_state.sets_nav = 0
+                    st.session_state.switch_to_tab2 = True
+                else:
+                    st.session_state.units_nav = nav2 + 1
             st.rerun()
 
     if not can_save:
         if details_needed:
             st.warning("⚠️ Please provide reason in 'Details' for selecting 'no_action_other'.")
         else:
-            st.caption("⚠️ Complete all three sections (validity, action, helpfulness) to enable saving.")
+            st.caption("⚠️ Complete all sections (validity, specificity, action, helpfulness) to enable saving.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1219,8 +1230,6 @@ with tab2:
     <span class="instructions-label">📌 Instructions:</span>Read all feedback sets below (Sets A, B, and C), then <strong>rank them according to four criteria</strong>: <strong>validity</strong> (is the feedback a valid 
 issue/question/suggestion?), <strong>specificity</strong> (is it anchored to specific parts of the 
 paper?), <strong>actionability</strong> (can the authors clearly act on it?), and <strong>helpfulness</strong> (how useful is it overall to the authors?). Each set letter must be used exactly once.
-    
-    </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
@@ -1238,15 +1247,8 @@ paper?), <strong>actionability</strong> (can the authors clearly act on it?), an
                 unsafe_allow_html=True,
             )
             if text:
-                items = _parse_numbered_items(text)
-                kw_by_unit = {}
-                for idx, itm in enumerate(items):
-                    clean = _NUMBERED_ITEM_RE.sub("", itm).strip()
-                    k = (paper_id1, model, clean)
-                    kw_by_unit[idx] = tfidf_keywords.get(k, frozenset())
-
                 st.markdown(
-                    f"<div class='fb-card'>{_format_feedback_text(text, kw_by_unit)}</div>",
+                    f"<div class='fb-card'>{_format_feedback_text(text)}</div>",
                     unsafe_allow_html=True,
                 )
             else:
@@ -1337,6 +1339,11 @@ paper?), <strong>actionability</strong> (can the authors clearly act on it?), an
             
             if not is_last_paper:
                 st.session_state.sets_nav = nav1 + 1
+            else:
+                u_pos = _first_unannotated_unit_pos(assigned_units)
+                if u_pos is not None:
+                    st.session_state.units_nav = u_pos
+                    st.session_state.switch_to_tab1 = True
             st.rerun()
 
     # ── Persistent save status banner ─────────────────────────────────────────
