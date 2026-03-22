@@ -1273,7 +1273,6 @@ paper?), <strong>actionability</strong> (can the authors clearly act on it?), an
                 m0 = existing_ranking[rank_num - 1]
                 lbl0 = model_to_label.get(m0)
             st.session_state[draft_rankpos_key][rank_num] = lbl0
-            st.session_state[f"rankpos_{paper_id1}_{rank_num}"] = lbl0
 
     rank_cols = st.columns(len(shuffled))
     rank_to_label: dict[int, str | None] = {}
