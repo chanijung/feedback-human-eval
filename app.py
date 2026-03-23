@@ -1626,7 +1626,7 @@ elif task_flow_phase == 3:
 
     st.markdown("""
     <div class="instructions-block">
-    <span class="instructions-label">📌 Instructions:</span>Read all feedback sets below (Sets A, B, and C), then <strong>rank them according to four criteria</strong>: <strong>validity</strong> (is the feedback a valid 
+    <span class="instructions-label">📌 Instructions:</span> Read all feedback sets below (Sets A, B, and C), then <strong>rank them according to four criteria</strong>: <strong>validity</strong> (is the feedback a valid 
 issue/question/suggestion?), <strong>specificity</strong> (is it anchored to specific parts of the 
 paper?), <strong>actionability</strong> (can the authors clearly act on it?), and <strong>helpfulness</strong> (how useful is it overall to the authors?). Each set letter must be used exactly once.
     <p class="instructions-irreversible">
@@ -1760,7 +1760,7 @@ paper?), <strong>actionability</strong> (can the authors clearly act on it?), an
 
             ok, err = save_ranking(annotator, paper_id1, sorted_models, counting_payload=counting_payload)
             if ok:
-                st.session_state.last_save_toast = {"ok": True, "msg": "✅ Ranking saved to Google Sheets!", "task": "ranking"}
+                st.session_state.last_save_toast = {"ok": True, "msg": "✅ Ranking saved!", "task": "ranking"}
             elif err:
                 st.session_state.last_save_toast = {"ok": False, "msg": f"❌ Save failed: {err}", "task": "ranking"}
             else:
