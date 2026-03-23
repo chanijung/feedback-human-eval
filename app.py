@@ -314,10 +314,6 @@ h1 a, h2 a, h3 a, h4 a, h5 a, h6 a { display: none !important; }
     padding: 1.35rem 1.75rem 1.45rem 1.75rem;
     box-shadow: 0 8px 28px rgba(37, 99, 235, 0.14);
 }
-.current-step-wrap--phase1 {
-    border-color: #dc2626;
-    box-shadow: 0 8px 28px rgba(220, 38, 38, 0.12);
-}
 .current-step-line {
     font-weight: 700;
     font-size: 1.7rem !important;
@@ -897,6 +893,145 @@ def _sync_task_flow_phase(assigned_units: pd.DataFrame, n_units: int, n_units_do
 _SET_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H"]
 
 
+def _task1_read_unit_form_from_session(nav_idx: int) -> tuple[dict | None, bool]:
+    """Read Task 1 widgets from session_state (nav row is above widgets; use keys for nav_idx)."""
+    validity = st.session_state.get(f"validity_{nav_idx}")
+    specificity = st.session_state.get(f"spec_{nav_idx}")
+    action = st.session_state.get(f"action_{nav_idx}")
+    details = st.session_state.get(f"details_{nav_idx}", "")
+    if not isinstance(details, str):
+        details = str(details)
+    helpfulness = st.session_state.get(f"help_{nav_idx}")
+    can_save_basic = (
+        validity is not None and specificity is not None and action is not None and helpfulness is not None
+    )
+    details_needed = action == "no_action_other" and not details.strip()
+    can_save = can_save_basic and not details_needed
+    if not can_save:
+        return None, False
+    return {
+        "validity": validity,
+        "specificity": specificity,
+        "action": action,
+        "details": details,
+        "helpfulness": helpfulness,
+    }, True
+
+
+def _task1_persist_if_complete(annotator: str, nav_idx: int, assigned_units: pd.DataFrame) -> bool:
+    """If form at nav_idx is complete, upsert to Sheets. Returns True if caller may change units_nav.
+    On sheet error, sets toast, calls st.rerun(), and returns False."""
+    annot, can_save = _task1_read_unit_form_from_session(nav_idx)
+    if not can_save or annot is None:
+        return True
+    urow = assigned_units.iloc[nav_idx]
+    paper_id2 = str(urow["paper_id"])
+    source2 = str(urow.get("feedback_source", "") or "").strip()
+    unit_text2 = str(urow.get("feedback_unit", "") or "").strip()
+    unit_key2 = (paper_id2, source2, unit_text2)
+    st.session_state.unit_annots[unit_key2] = {
+        "validity": annot["validity"],
+        "specificity": annot["specificity"],
+        "action": annot["action"],
+        "details": annot["details"],
+        "helpfulness": annot["helpfulness"],
+    }
+    ok, err = save_unit_annotation(
+        annotator,
+        paper_id2,
+        source2,
+        unit_text2,
+        annot["validity"],
+        annot["specificity"],
+        annot["action"],
+        annot["details"],
+        annot["helpfulness"],
+    )
+    if ok:
+        st.session_state.last_save_toast = {
+            "ok": True,
+            "msg": "✅ Response saved!",
+            "task": "unit",
+            "unit_key": unit_key2,
+        }
+    elif err:
+        st.session_state.last_save_toast = {
+            "ok": False,
+            "msg": f"❌ Save failed: {err}",
+            "task": "unit",
+            "unit_key": unit_key2,
+        }
+    else:
+        st.session_state.last_save_toast = {
+            "ok": None,
+            "msg": "💾 Saved locally (Google Sheets not configured).",
+            "task": "unit",
+            "unit_key": unit_key2,
+        }
+    if ok or err is None:
+        return True
+    st.rerun()
+    return False
+
+
+def _ranking_counting_payload_for_save() -> tuple[dict | None, str | None]:
+    """Build counting_payload for save_ranking when counting finished; else None. Error string if state invalid."""
+    if not st.session_state.get("counting_completed_at"):
+        return None, None
+    raw_answers = st.session_state.get("counting_answers", [])
+    if len(raw_answers) != 5:
+        return None, "❌ Counting task state is invalid: expected exactly five answers."
+    if not all(re.fullmatch(r"-?\d+", str(v)) for v in raw_answers):
+        return None, "❌ Counting task state is invalid: all five answers must be integers."
+    counting_payload = {
+        "start_num": int(st.session_state.get("distractor_start_num")),
+        "step_num": int(st.session_state.get("distractor_step_num")),
+        "answers": [int(v) for v in raw_answers],
+        "is_correct": bool(st.session_state.get("counting_is_correct")),
+        "completed_at": st.session_state.get("counting_completed_at"),
+    }
+    return counting_payload, None
+
+
+def _task2_read_rank_labels_from_session(paper_id: str, n_ranks: int) -> list:
+    return [st.session_state.get(f"rankpos_{paper_id}_{rank_num}") for rank_num in range(1, n_ranks + 1)]
+
+
+def _task2_persist_ranking_if_complete(
+    annotator: str,
+    paper_id1: str,
+    label_to_model: dict,
+    labels_in_order: list,
+) -> bool:
+    """If ranking draft is complete and valid, save to Sheets. True = caller may change sets_nav."""
+    all_filled = all(x is not None for x in labels_in_order)
+    all_unique = len(set(labels_in_order)) == len(labels_in_order) if all_filled else False
+    if not all_filled or not all_unique:
+        return True
+    sorted_models = [label_to_model[lb] for lb in labels_in_order]
+    st.session_state.rankings[paper_id1] = sorted_models
+    counting_payload, count_err = _ranking_counting_payload_for_save()
+    if count_err:
+        st.session_state.last_save_toast = {"ok": False, "msg": count_err, "task": "ranking"}
+        st.rerun()
+        return False
+    ok, err = save_ranking(annotator, paper_id1, sorted_models, counting_payload=counting_payload)
+    if ok:
+        st.session_state.last_save_toast = {"ok": True, "msg": "✅ Ranking saved!", "task": "ranking"}
+    elif err:
+        st.session_state.last_save_toast = {"ok": False, "msg": f"❌ Save failed: {err}", "task": "ranking"}
+    else:
+        st.session_state.last_save_toast = {
+            "ok": None,
+            "msg": "💾 Ranking saved locally (Google Sheets not configured).",
+            "task": "ranking",
+        }
+    if ok or err is None:
+        return True
+    st.rerun()
+    return False
+
+
 # ── SESSION INIT ──────────────────────────────────────────────────────────────
 def _init():
     if "annotator" not in st.session_state:
@@ -920,6 +1055,7 @@ def _init():
         "counting_answers": ["", "", "", "", ""],
         "counting_is_correct": None,
         "counting_completed_at": "",
+        "task2_final_save_done": False,  # last-paper Save & Next pressed when all work complete (Task 2)
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -945,6 +1081,7 @@ def _clear_user_state() -> None:
     st.session_state.counting_answers = ["", "", "", "", ""]
     st.session_state.counting_is_correct = None
     st.session_state.counting_completed_at = ""
+    st.session_state.task2_final_save_done = False
     for key in list(st.session_state.keys()):
         if key.startswith(("draft_", "rank_", "rankpos_")):
             del st.session_state[key]
@@ -1040,8 +1177,35 @@ all_annotations_complete = task1_complete and counting_complete and task2_comple
 has_assigned_work = (n_units > 0) or (n_sets > 0)
 
 
+def _maybe_render_end_annotation_banner_only(end_only_ui: bool = False) -> None:
+    """Banner when all items are done; End annotation beside Save & Next, or alone after final save."""
+    if not (
+        has_assigned_work
+        and all_annotations_complete
+        and not st.session_state.get("show_completion_page", False)
+    ):
+        return
+    sub = (
+        "Click <strong>End annotation</strong> below to confirm you are finished."
+        if end_only_ui
+        else "Click <strong>End annotation</strong> next to <strong>Save &amp; Next</strong> to confirm you are finished."
+    )
+    st.markdown("<div style='margin-top: 1.25rem;'></div>", unsafe_allow_html=True)
+    _, cta_mid, _ = st.columns([1, 3, 1], gap="small")
+    with cta_mid:
+        st.markdown(
+            f"""
+            <div class="end-annotation-wrap">
+              <p class="end-annotation-title">✓ You have completed all assigned Task 1 and Task 2 items</p>
+              <p class="end-annotation-sub">{sub}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def _maybe_render_end_annotation_cta() -> None:
-    """Shown at bottom of Task 2 (after Save) when all work is done; not on thank-you page."""
+    """Full-width End annotation when Task 2 has no papers (no Save row to pair with)."""
     if not (
         has_assigned_work
         and all_annotations_complete
@@ -1049,7 +1213,7 @@ def _maybe_render_end_annotation_cta() -> None:
     ):
         return
     st.markdown("<div style='margin-top: 1.25rem;'></div>", unsafe_allow_html=True)
-    _, cta_mid, _ = st.columns([0.35, 5, 0.35])
+    _, cta_mid, _ = st.columns([1, 3, 1], gap="small")
     with cta_mid:
         st.markdown(
             """
@@ -1151,10 +1315,9 @@ _phase_label = {
     3: "Task 2 — Rank Feedback Sets",
 }.get(task_flow_phase, f"Unknown ({task_flow_phase})")
 _phase_safe = html.escape(str(_phase_label))
-_step_box_mod = " current-step-wrap--phase1" if task_flow_phase == 1 else ""
 st.markdown(
     f"""
-    <div class="current-step-wrap{_step_box_mod}">
+    <div class="current-step-wrap">
       <div class="current-step-line">{_phase_safe}</div>
       <div class="current-step-oneway">Steps are one-way: after you advance, you cannot go back to a previous task.</div>
     </div>
@@ -1184,8 +1347,9 @@ if task_flow_phase == 1:
     c_prev2, c_pos2, c_next2 = st.columns([2, 3, 2])
     with c_prev2:
         if st.button("← Prev", disabled=(nav2 == 0), key="units_prev", use_container_width=True):
-            st.session_state.units_nav = nav2 - 1
-            st.rerun()
+            if _task1_persist_if_complete(annotator, nav2, assigned_units):
+                st.session_state.units_nav = nav2 - 1
+                st.rerun()
     with c_pos2:
         is_done2 = unit_key2 in st.session_state.unit_annots
         badge2 = '<span class="done-chip">✓ Annotated</span>' if is_done2 else '<span class="todo-chip">Not yet annotated</span>'
@@ -1206,8 +1370,9 @@ if task_flow_phase == 1:
             )
         with gc3:
             if st.button("Go", key="goto_unit_btn", use_container_width=True):
-                st.session_state.units_nav = int(goto_input) - 1
-                st.rerun()
+                if _task1_persist_if_complete(annotator, nav2, assigned_units):
+                    st.session_state.units_nav = int(goto_input) - 1
+                    st.rerun()
 
     with c_next2:
         if st.button(
@@ -1216,15 +1381,16 @@ if task_flow_phase == 1:
             key="units_next",
             use_container_width=True,
         ):
-            st.session_state.units_nav = nav2 + 1
-            st.rerun()
+            if _task1_persist_if_complete(annotator, nav2, assigned_units):
+                st.session_state.units_nav = nav2 + 1
+                st.rerun()
 
     # Jump to first unannotated (left aligned or in a separate row)
     c_jump, _ = st.columns([2.5, 4.5])
     with c_jump:
         if st.button("⏭ Jump to first unannotated", type="primary", key="jump_unannotated", use_container_width=True):
             pos = _first_unannotated_unit_pos(assigned_units)
-            if pos is not None:
+            if pos is not None and _task1_persist_if_complete(annotator, nav2, assigned_units):
                 st.session_state.units_nav = pos
                 st.rerun()
 
@@ -1394,51 +1560,39 @@ if task_flow_phase == 1:
     is_last_unit = (nav2 == len(assigned_units) - 1)
     btn_label = "💾 Save & Next →"
 
-    bc1, _ = st.columns([2, 8])
-    with bc1:
-        if st.button(btn_label, type="primary", disabled=not can_save, key="save_next_unit"):
-            annot = {"validity": validity, "specificity": specificity, "action": action, "details": details, "helpfulness": helpfulness}
-            st.session_state.unit_annots[unit_key2] = annot
-            ok, err = save_unit_annotation(annotator, paper_id2, source2, unit_text2, validity, specificity, action, details, helpfulness)
-            if ok:
-                st.session_state.last_save_toast = {
-                    "ok": True,
-                    "msg": "✅ Response saved!",
-                    "task": "unit",
-                    "unit_key": unit_key2,
-                }
-            elif err:
-                st.session_state.last_save_toast = {
-                    "ok": False,
-                    "msg": f"❌ Save failed: {err}",
-                    "task": "unit",
-                    "unit_key": unit_key2,
-                }
-            else:
-                st.session_state.last_save_toast = {
-                    "ok": None,
-                    "msg": "💾 Saved locally (Google Sheets not configured).",
-                    "task": "unit",
-                    "unit_key": unit_key2,
-                }
-
-            # Only leave this unit after a successful persist (or non-error local path); stay here on sheet errors so the toast is visible.
-            if ok or err is None:
-                if is_last_unit:
-                    # Do not auto-switch tabs; user moves with explicit button after Task 1 completion.
-                    st.session_state.units_nav = nav2
-                else:
-                    st.session_state.units_nav = nav2 + 1
-            st.rerun()
-
-    if not can_save:
-        if details_needed:
-            st.warning("⚠️ Please provide reason in 'Details' for selecting 'no_action_other'.")
+    def _commit_unit_save_next() -> None:
+        annot = {"validity": validity, "specificity": specificity, "action": action, "details": details, "helpfulness": helpfulness}
+        st.session_state.unit_annots[unit_key2] = annot
+        ok, err = save_unit_annotation(annotator, paper_id2, source2, unit_text2, validity, specificity, action, details, helpfulness)
+        if ok:
+            st.session_state.last_save_toast = {
+                "ok": True,
+                "msg": "✅ Response saved!",
+                "task": "unit",
+                "unit_key": unit_key2,
+            }
+        elif err:
+            st.session_state.last_save_toast = {
+                "ok": False,
+                "msg": f"❌ Save failed: {err}",
+                "task": "unit",
+                "unit_key": unit_key2,
+            }
         else:
-            st.caption("⚠️ Complete all sections (validity, specificity, action, helpfulness) to enable saving.")
+            st.session_state.last_save_toast = {
+                "ok": None,
+                "msg": "💾 Saved locally (Google Sheets not configured).",
+                "task": "unit",
+                "unit_key": unit_key2,
+            }
+        if ok or err is None:
+            if is_last_unit:
+                st.session_state.units_nav = nav2
+            else:
+                st.session_state.units_nav = nav2 + 1
+        st.rerun()
 
     if task1_complete and not assigned_units.empty:
-        st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
         st.markdown(
             """
             <p class="instructions-irreversible">
@@ -1447,13 +1601,31 @@ if task_flow_phase == 1:
             """,
             unsafe_allow_html=True,
         )
-        st.success("Task 1 is complete. Click below to continue to the next task.")
-        c_next_task_btn, _ = st.columns([2.5, 4.5])
-        with c_next_task_btn:
-            if st.button("Go to next task →", type="primary", key="go_to_next_task_from_task1", use_container_width=True):
-                st.session_state.sets_nav = 0
-                st.session_state.task_flow_phase = 2
-                st.rerun()
+        st.success("Task 1 is complete. Use **Go to next task** beside Save & Next when you are ready.")
+
+    if task1_complete and not assigned_units.empty:
+        _pair, _ = st.columns([4.2, 5.8], gap="small")
+        with _pair:
+            bc_save, bc_next_task = st.columns(2, gap="small")
+            with bc_save:
+                if st.button(btn_label, type="primary", disabled=not can_save, key="save_next_unit"):
+                    _commit_unit_save_next()
+            with bc_next_task:
+                if st.button("Go to next task →", type="primary", key="go_to_next_task_from_task1", use_container_width=True):
+                    st.session_state.sets_nav = 0
+                    st.session_state.task_flow_phase = 2
+                    st.rerun()
+    else:
+        bc_save, _ = st.columns([2, 8])
+        with bc_save:
+            if st.button(btn_label, type="primary", disabled=not can_save, key="save_next_unit"):
+                _commit_unit_save_next()
+
+    if not can_save:
+        if details_needed:
+            st.warning("⚠️ Please provide reason in 'Details' for selecting 'no_action_other'.")
+        else:
+            st.caption("⚠️ Complete all sections (validity, specificity, action, helpfulness) to enable saving.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1491,16 +1663,16 @@ elif task_flow_phase == 2:
 
     st.session_state.counting_answers = answer_inputs
     all_filled = all(v != "" for v in answer_inputs)
-    c_mid_btn, c_mid_msg = st.columns([2, 6])
+    st.markdown(
+        """
+        <p class="instructions-irreversible" style="margin-bottom:0.65rem;">
+        Continuing to Task 2 is one-way: you will not be able to go back to earlier tasks.
+        </p>
+        """,
+        unsafe_allow_html=True,
+    )
+    c_mid_btn, c_mid_msg = st.columns([2, 6], gap="small")
     with c_mid_btn:
-        st.markdown(
-            """
-            <p class="instructions-irreversible" style="margin-bottom:0.5rem;">
-            Continuing to Task 2 is one-way: you will not be able to go back to earlier tasks.
-            </p>
-            """,
-            unsafe_allow_html=True,
-        )
         if st.button(
             "Continue to Task 2 →",
             type="primary",
@@ -1596,8 +1768,10 @@ elif task_flow_phase == 3:
     c_prev, c_pos, c_next = st.columns([2, 3, 2])
     with c_prev:
         if st.button("← Prev", disabled=(nav1 == 0), key="sets_prev", use_container_width=True):
-            st.session_state.sets_nav = nav1 - 1
-            st.rerun()
+            lbls = _task2_read_rank_labels_from_session(paper_id1, len(shuffled))
+            if _task2_persist_ranking_if_complete(annotator, paper_id1, label_to_model, lbls):
+                st.session_state.sets_nav = nav1 - 1
+                st.rerun()
     with c_pos:
         is_ranked = paper_id1 in st.session_state.rankings
         badge_html = '<span class="done-chip">✓ Ranked</span>' if is_ranked else '<span class="todo-chip">Not yet ranked</span>'
@@ -1612,8 +1786,10 @@ elif task_flow_phase == 3:
             key="sets_next",
             use_container_width=True,
         ):
-            st.session_state.sets_nav = nav1 + 1
-            st.rerun()
+            lbls = _task2_read_rank_labels_from_session(paper_id1, len(shuffled))
+            if _task2_persist_ranking_if_complete(annotator, paper_id1, label_to_model, lbls):
+                st.session_state.sets_nav = nav1 + 1
+                st.rerun()
 
     st.markdown("---")
 
@@ -1721,59 +1897,90 @@ paper?), <strong>actionability</strong> (can the authors clearly act on it?), an
     is_last_paper = (nav1 == len(assigned_sets) - 1)
     btn_label = "💾 Save & Next →"
 
-    save_c, status_c = st.columns([2, 6])
-    with save_c:
-        if st.button(
-            btn_label,
-            type="primary",
-            disabled=(not all_filled or not all_unique),
-            key="submit_ranking",
-        ):
-            sorted_models = [label_to_model[lb] for lb in labels_in_order]
-            st.session_state.rankings[paper_id1] = sorted_models
-            counting_payload = None
-            if st.session_state.get("counting_completed_at"):
-                raw_answers = st.session_state.get("counting_answers", [])
-                if len(raw_answers) != 5:
-                    st.session_state.last_save_toast = {
-                        "ok": False,
-                        "msg": "❌ Counting task state is invalid: expected exactly five answers.",
-                        "task": "ranking",
-                    }
+    show_end_anno = (
+        has_assigned_work
+        and all_annotations_complete
+        and not st.session_state.get("show_completion_page", False)
+    )
+    if show_end_anno and not is_last_paper:
+        st.session_state.task2_final_save_done = False
+
+    task2_end_only = show_end_anno and bool(st.session_state.get("task2_final_save_done"))
+
+    if show_end_anno:
+        _maybe_render_end_annotation_banner_only(end_only_ui=task2_end_only)
+
+    if task2_end_only:
+        _, end_only_col, _ = st.columns([1, 3, 1], gap="small")
+        save_c = None
+        end_anno_c = None
+        status_c = None
+        with end_only_col:
+            if st.button(
+                "End annotation",
+                type="primary",
+                use_container_width=True,
+                key="btn_end_annotation",
+            ):
+                st.session_state.show_completion_page = True
+                st.rerun()
+    elif show_end_anno:
+        _, pair_col, _ = st.columns([1, 3, 1], gap="small")
+        with pair_col:
+            save_c, end_anno_c = st.columns(2, gap="small")
+    else:
+        save_c, status_c = st.columns([2, 6], gap="small")
+        end_anno_c = None
+
+    if save_c is not None:
+        with save_c:
+            if st.button(
+                btn_label,
+                type="primary",
+                disabled=(not all_filled or not all_unique),
+                key="submit_ranking",
+            ):
+                sorted_models = [label_to_model[lb] for lb in labels_in_order]
+                st.session_state.rankings[paper_id1] = sorted_models
+                counting_payload, count_err = _ranking_counting_payload_for_save()
+                if count_err:
+                    st.session_state.last_save_toast = {"ok": False, "msg": count_err, "task": "ranking"}
                     st.rerun()
 
-                if not all(re.fullmatch(r"-?\d+", str(v)) for v in raw_answers):
-                    st.session_state.last_save_toast = {
-                        "ok": False,
-                        "msg": "❌ Counting task state is invalid: all five answers must be integers.",
-                        "task": "ranking",
-                    }
-                    st.rerun()
+                ok, err = save_ranking(annotator, paper_id1, sorted_models, counting_payload=counting_payload)
+                if ok:
+                    st.session_state.last_save_toast = {"ok": True, "msg": "✅ Ranking saved!", "task": "ranking"}
+                elif err:
+                    st.session_state.last_save_toast = {"ok": False, "msg": f"❌ Save failed: {err}", "task": "ranking"}
+                else:
+                    st.session_state.last_save_toast = {"ok": None, "msg": "💾 Ranking saved locally (Google Sheets not configured).", "task": "ranking"}
 
-                counting_payload = {
-                    "start_num": int(st.session_state.get("distractor_start_num")),
-                    "step_num": int(st.session_state.get("distractor_step_num")),
-                    "answers": [int(v) for v in raw_answers],
-                    "is_correct": bool(st.session_state.get("counting_is_correct")),
-                    "completed_at": st.session_state.get("counting_completed_at"),
-                }
+                if ok or err is None:
+                    if not is_last_paper:
+                        st.session_state.sets_nav = nav1 + 1
+                    elif show_end_anno:
+                        st.session_state.task2_final_save_done = True
+                st.rerun()
 
-            ok, err = save_ranking(annotator, paper_id1, sorted_models, counting_payload=counting_payload)
-            if ok:
-                st.session_state.last_save_toast = {"ok": True, "msg": "✅ Ranking saved!", "task": "ranking"}
-            elif err:
-                st.session_state.last_save_toast = {"ok": False, "msg": f"❌ Save failed: {err}", "task": "ranking"}
-            else:
-                st.session_state.last_save_toast = {"ok": None, "msg": "💾 Ranking saved locally (Google Sheets not configured).", "task": "ranking"}
-            
-            if not is_last_paper:
-                st.session_state.sets_nav = nav1 + 1
-            st.rerun()
+    if end_anno_c is not None:
+        with end_anno_c:
+            if st.button(
+                "End annotation",
+                type="primary",
+                use_container_width=True,
+                key="btn_end_annotation_task2_pair",
+            ):
+                st.session_state.show_completion_page = True
+                st.rerun()
 
     # ── Persistent save status banner ─────────────────────────────────────────
     toast = st.session_state.get("last_save_toast")
     if toast and toast.get("task") == "ranking":
-        with status_c:
+        if show_end_anno:
+            _, toast_c, _ = st.columns([1, 4, 1], gap="small")
+        else:
+            toast_c = status_c
+        with toast_c:
             if toast["ok"] is True:
                 st.success(toast["msg"])
             elif toast["ok"] is False:
@@ -1786,8 +1993,6 @@ paper?), <strong>actionability</strong> (can the authors clearly act on it?), an
         saved = st.session_state.rankings[paper_id1]
         summary = " → ".join([f"**Set {model_to_label.get(m, m)}**" for m in saved])
         st.markdown(f"**Saved ranking (best → worst):** {summary}")
-
-    _maybe_render_end_annotation_cta()
 
 else:
     st.error(
