@@ -4,6 +4,7 @@ import logging
 import hashlib
 import random
 import re
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -301,8 +302,48 @@ h1 a, h2 a, h3 a, h4 a, h5 a, h6 a { display: none !important; }
     color: var(--text);
 }
 
+/* Current step banner — 2× paper-title scale; boxed for visibility */
+.current-step-wrap {
+    text-align: center;
+    margin: 0 auto 1.1rem auto;
+    max-width: 58rem;
+    line-height: 1.25;
+    background: var(--surface);
+    border: 3px solid var(--accent);
+    border-radius: var(--radius);
+    padding: 1.35rem 1.75rem 1.45rem 1.75rem;
+    box-shadow: 0 8px 28px rgba(37, 99, 235, 0.14);
+}
+.current-step-wrap--phase1 {
+    border-color: #dc2626;
+    box-shadow: 0 8px 28px rgba(220, 38, 38, 0.12);
+}
+.current-step-line {
+    font-weight: 700;
+    font-size: 1.7rem !important;
+    color: var(--text);
+    margin: 0;
+    letter-spacing: -0.02em;
+}
+.current-step-oneway {
+    font-size: 1.2rem !important;
+    font-weight: 700;
+    color: #dc2626;
+    margin: 0.55rem 0 0 0;
+    line-height: 1.35;
+    text-shadow: 0 0 1px rgba(220, 38, 38, 0.15);
+}
+
 /* Instructions heading in red */
 .instructions-label { color: #dc2626; font-weight: 600; }
+
+/* Irreversible step warning (must stay red in light/dark) */
+.instructions-irreversible {
+    color: #dc2626;
+    font-weight: 600;
+    margin-top: 0.75rem;
+    line-height: 1.55;
+}
 
 /* Completion / thank-you panel */
 .ending-panel {
@@ -379,7 +420,17 @@ _SCOPES = [
 ]
 _RANKINGS_SHEET = "Rankings"
 _UNITS_SHEET = "UnitAnnotations"
-_RANKINGS_HEADER = ["annotator", "paper_id", "ranked_models", "timestamp"]
+_RANKINGS_HEADER = [
+    "annotator",
+    "paper_id",
+    "ranked_models",
+    "distractor_start_num",
+    "distractor_step_num",
+    "distractor_user_answers",
+    "distractor_is_correct",
+    "distractor_completed_at",
+    "timestamp",
+]
 # unit_hash = MD5(paper_id + source + unit_text) — used as a stable unique key for upsert
 _UNITS_HEADER = [
     "unit_hash", "annotator", "paper_id", "feedback_source", "feedback_unit",
@@ -438,20 +489,67 @@ def _ensure_ws(sheet_name: str, header: list):
         return None, str(e)
 
 
-def save_ranking(annotator: str, paper_id: str, ranked_models: list) -> tuple[bool, str | None]:
+def save_ranking(
+    annotator: str,
+    paper_id: str,
+    ranked_models: list,
+    counting_payload: dict | None = None,
+) -> tuple[bool, str | None]:
     """Returns (success, error_message)."""
     ws, err = _ensure_ws(_RANKINGS_SHEET, _RANKINGS_HEADER)
     if ws is None:
         return False, err
     try:
         ts = datetime.now(timezone.utc).isoformat()
-        row = [annotator, paper_id, json.dumps(ranked_models), ts]
         existing = ws.get_all_values()
+        header = existing[0] if existing else _RANKINGS_HEADER
+        col_map = {name: idx for idx, name in enumerate(header)}
+
+        def _col(name: str) -> int:
+            return col_map.get(name, -1)
+
+        ann_idx = _col("annotator")
+        pid_idx = _col("paper_id")
+        if ann_idx < 0 or pid_idx < 0:
+            return False, "Rankings sheet header is invalid: missing annotator/paper_id columns."
+
+        def _build_row(prev: list[str] | None) -> list[str]:
+            row = list(prev) if prev else []
+            if len(row) < len(header):
+                row.extend([""] * (len(header) - len(row)))
+
+            row[ann_idx] = annotator
+            row[pid_idx] = paper_id
+
+            ranked_idx = _col("ranked_models")
+            if ranked_idx >= 0:
+                row[ranked_idx] = json.dumps(ranked_models)
+
+            if counting_payload is not None:
+                start_idx = _col("distractor_start_num")
+                step_idx = _col("distractor_step_num")
+                ans_idx = _col("distractor_user_answers")
+                ok_idx = _col("distractor_is_correct")
+                done_idx = _col("distractor_completed_at")
+                if min(start_idx, step_idx, ans_idx, ok_idx, done_idx) < 0:
+                    raise ValueError("Rankings sheet header is invalid: missing counting task columns.")
+                row[start_idx] = str(counting_payload["start_num"])
+                row[step_idx] = str(counting_payload["step_num"])
+                row[ans_idx] = json.dumps(counting_payload["answers"])
+                row[ok_idx] = "true" if counting_payload["is_correct"] else "false"
+                row[done_idx] = counting_payload["completed_at"]
+
+            ts_idx = _col("timestamp")
+            if ts_idx >= 0:
+                row[ts_idx] = ts
+            return row
+
         for i, r in enumerate(existing[1:], start=2):
-            if len(r) >= 2 and r[0].strip() == annotator and r[1].strip() == paper_id:
-                ws.update([row], f"A{i}")
+            if len(r) > max(ann_idx, pid_idx) and r[ann_idx].strip() == annotator and r[pid_idx].strip() == paper_id:
+                ws.update([_build_row(r)], f"A{i}")
                 return True, None
-        ws.append_row(row)
+
+        ws.append_row(_build_row(None))
         return True, None
     except Exception as e:
         logging.error("save_ranking failed: %s", e)
@@ -510,6 +608,105 @@ def load_rankings_from_sheets(annotator: str) -> dict:
         return result
     except Exception:
         return {}
+
+
+def restore_counting_from_rankings_sheet(annotator: str) -> None:
+    """Restore counting-task session fields from Rankings rows (survives page refresh)."""
+    ws, _ = _ensure_ws(_RANKINGS_SHEET, _RANKINGS_HEADER)
+    if ws is None:
+        return
+    try:
+        rows = ws.get_all_values()
+        if not rows or len(rows) < 2:
+            return
+        header = rows[0]
+
+        def ci(name: str, fallback: int) -> int:
+            return header.index(name) if name in header else fallback
+
+        i_ann = ci("annotator", 0)
+        i_start = ci("distractor_start_num", -1)
+        i_step = ci("distractor_step_num", -1)
+        i_ans = ci("distractor_user_answers", -1)
+        i_ok = ci("distractor_is_correct", -1)
+        i_done = ci("distractor_completed_at", -1)
+        if i_done < 0 or i_ann < 0:
+            return
+
+        best_row: list[str] | None = None
+        best_done = ""
+        for r in rows[1:]:
+            if not r or len(r) <= max(i_ann, i_done):
+                continue
+            if r[i_ann].strip() != annotator:
+                continue
+            done = (r[i_done] or "").strip()
+            if not done:
+                continue
+            if done >= best_done:
+                best_done = done
+                best_row = r
+
+        if best_row is None:
+            return
+
+        if i_start >= 0 and len(best_row) > i_start and (best_row[i_start] or "").strip():
+            st.session_state.distractor_start_num = int(str(best_row[i_start]).strip())
+        if i_step >= 0 and len(best_row) > i_step and (best_row[i_step] or "").strip():
+            st.session_state.distractor_step_num = int(str(best_row[i_step]).strip())
+        st.session_state.counting_completed_at = best_done
+
+        if i_ok >= 0 and len(best_row) > i_ok:
+            v = (best_row[i_ok] or "").strip().lower()
+            if v in ("true", "false"):
+                st.session_state.counting_is_correct = v == "true"
+
+        if i_ans >= 0 and len(best_row) > i_ans:
+            raw_a = (best_row[i_ans] or "").strip()
+            if raw_a:
+                try:
+                    parsed = json.loads(raw_a)
+                    if isinstance(parsed, list) and len(parsed) == 5:
+                        st.session_state.counting_answers = [str(x) for x in parsed]
+                except json.JSONDecodeError:
+                    logging.warning("Could not parse distractor_user_answers for annotator=%s", annotator)
+    except Exception as e:
+        logging.warning("restore_counting_from_rankings_sheet failed: %s", e)
+
+
+def apply_resume_navigation_after_sheet_load(
+    assigned_units: pd.DataFrame,
+    assigned_sets: pd.DataFrame,
+    n_units: int,
+    n_units_done: int,
+    n_sets: int,
+    n_sets_done: int,
+) -> None:
+    """Set units_nav / sets_nav once after loading Google Sheets (e.g. refresh)."""
+    task1_done = assigned_units.empty or (n_units_done >= n_units)
+    counting_done = bool(st.session_state.get("counting_completed_at"))
+    task2_done = assigned_sets.empty or (n_sets_done >= n_sets)
+
+    if not task1_done:
+        pos = _first_unannotated_unit_pos(assigned_units)
+        if pos is not None:
+            st.session_state.units_nav = pos
+        return
+
+    if not counting_done:
+        return
+
+    if not task2_done:
+        if n_sets > 0:
+            for pos, (_, row) in enumerate(assigned_sets.iterrows()):
+                if str(row["paper_id"]) not in st.session_state.rankings:
+                    st.session_state.sets_nav = pos
+                    break
+        return
+
+    # All annotation work done; keep user on Task 2 last paper for End annotation CTA
+    if n_sets > 0:
+        st.session_state.sets_nav = n_sets - 1
 
 
 def load_unit_annots_from_sheets(annotator: str) -> dict:
@@ -631,6 +828,37 @@ def _shuffled_models(annotator: str, models: list[str]) -> list[str]:
     return [models[i] for i in order]
 
 
+def _interleave_task1_units(df: pd.DataFrame, annotator: str) -> pd.DataFrame:
+    """Reorder Task 1 units so the same feedback_source rarely appears back-to-back.
+
+    Uses round-robin across sources; order within each source stays as in the CSV.
+    Source bucket order is shuffled deterministically per annotator (not fully random).
+    """
+    if df.empty or "feedback_source" not in df.columns:
+        return df.reset_index(drop=True)
+
+    buckets: dict[str, deque[int]] = defaultdict(deque)
+    first_seen: list[str] = []
+    for i in range(len(df)):
+        src = str(df.iloc[i].get("feedback_source", "") or "").strip() or "__unknown__"
+        if src not in buckets:
+            first_seen.append(src)
+        buckets[src].append(i)
+
+    seed = int(hashlib.md5(f"task1_units::{annotator.lower()}".encode()).hexdigest(), 16) % (2 ** 32)
+    rng = random.Random(seed)
+    source_order = list(first_seen)
+    rng.shuffle(source_order)
+
+    out_idx: list[int] = []
+    while any(buckets[s] for s in source_order):
+        for s in source_order:
+            if buckets[s]:
+                out_idx.append(buckets[s].popleft())
+
+    return df.iloc[out_idx].reset_index(drop=True)
+
+
 def _format_feedback_text(text: str) -> str:
     """Render plain feedback text as safe HTML with explicit line spacing."""
     safe = html.escape(text).strip()
@@ -641,6 +869,29 @@ def _format_feedback_text(text: str) -> str:
         f"<div class='fb-line'>{line if line.strip() else '&nbsp;'}</div>"
         for line in lines
     )
+
+
+def _expected_counting_answers(start_num: int, step_num: int) -> list[int]:
+    return [start_num - (step_num * i) for i in range(5)]
+
+
+def _sync_task_flow_phase(assigned_units: pd.DataFrame, n_units: int, n_units_done: int) -> None:
+    """Linear flow: Task 1 → Counting → Task 2. No backward navigation between tasks."""
+    counting_done = bool(st.session_state.get("counting_completed_at"))
+    task1_done = assigned_units.empty or (n_units_done >= n_units)
+    p = int(st.session_state.get("task_flow_phase", 1))
+    if not task1_done:
+        st.session_state.task_flow_phase = 1
+        return
+    if not counting_done:
+        if assigned_units.empty:
+            st.session_state.task_flow_phase = 2
+        else:
+            if p > 2:
+                p = 2
+            st.session_state.task_flow_phase = min(max(p, 1), 2)
+        return
+    st.session_state.task_flow_phase = 3
 
 
 _SET_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H"]
@@ -658,10 +909,17 @@ def _init():
         "unit_annots": {},     # {(paper_id, source, unit_text): {validity, action, details, helpfulness}}
         "sheets_loaded": False,
         "last_save_toast": None,  # {"ok", "msg", "task": "ranking"|"unit"; unit task also "unit_key"}
-        "switch_to_tab2": False,  # trigger JS tab switch after rerun (→ Task 2)
-        "switch_to_tab1": False,  # after last Task 2 save, if Task 1 incomplete (→ Task 1)
+        "switch_to_tab2": False,  # legacy (tabs removed; kept for safety)
+        "switch_to_tab_distractor": False,
+        "switch_to_tab1": False,
+        "task_flow_phase": 1,  # 1 = Task 1, 2 = Counting, 3 = Task 2 (linear, no backward)
         "_loaded_for_annotator": "",  # tracks which annotator the sheets data belongs to
         "show_completion_page": False,  # True after user clicks "End annotation" (thank-you page)
+        "distractor_start_num": random.randint(100, 500),
+        "distractor_step_num": random.choice([6,7]),
+        "counting_answers": ["", "", "", "", ""],
+        "counting_is_correct": None,
+        "counting_completed_at": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -681,7 +939,12 @@ def _clear_user_state() -> None:
     st.session_state._loaded_for_annotator = ""
     st.session_state.show_completion_page = False
     st.session_state.switch_to_tab2 = False
+    st.session_state.switch_to_tab_distractor = False
     st.session_state.switch_to_tab1 = False
+    st.session_state.task_flow_phase = 1
+    st.session_state.counting_answers = ["", "", "", "", ""]
+    st.session_state.counting_is_correct = None
+    st.session_state.counting_completed_at = ""
     for key in list(st.session_state.keys()):
         if key.startswith(("draft_", "rank_", "rankpos_")):
             del st.session_state[key]
@@ -724,6 +987,7 @@ df_units = _load_units(_UNITS_PATH.stat().st_mtime if _UNITS_PATH.exists() else 
 
 assigned_sets = _get_assigned(df_sets, annotator)
 assigned_units = _get_assigned(df_units, annotator)
+assigned_units = _interleave_task1_units(assigned_units, annotator)
 
 if annotator and assigned_sets.empty and assigned_units.empty:
     _, mid_bad, _ = st.columns([1, 2, 1])
@@ -746,19 +1010,10 @@ if not st.session_state.sheets_loaded and _get_gc() is not None:
     st.session_state.rankings.update(loaded_r)
     loaded_u = load_unit_annots_from_sheets(annotator)
     st.session_state.unit_annots.update(loaded_u)
-    # Jump to first unannotated unit
-    paper_ids_done = set(st.session_state.rankings.keys())
-    for pos, (_, row) in enumerate(assigned_sets.iterrows()):
-        if str(row["paper_id"]) not in paper_ids_done:
-            st.session_state.sets_nav = pos
-            break
-    for pos, (_, row) in enumerate(assigned_units.iterrows()):
-        key = (str(row["paper_id"]), str(row["feedback_source"]), str(row["feedback_unit"]).strip())
-        if key not in st.session_state.unit_annots:
-            st.session_state.units_nav = pos
-            break
+    restore_counting_from_rankings_sheet(annotator)
     st.session_state.sheets_loaded = True
     st.session_state._loaded_for_annotator = annotator
+    st.session_state._should_resume_nav = True
 
 # ── PROGRESS COUNTS ───────────────────────────────────────────────────────────
 n_sets = len(assigned_sets)
@@ -773,9 +1028,50 @@ n_units_done = sum(
        in st.session_state.unit_annots
 )
 
+if st.session_state.pop("_should_resume_nav", False):
+    apply_resume_navigation_after_sheet_load(
+        assigned_units, assigned_sets, n_units, n_units_done, n_sets, n_sets_done,
+    )
+
+counting_complete = bool(st.session_state.get("counting_completed_at"))
 task1_complete = assigned_units.empty or (n_units_done >= n_units)
 task2_complete = assigned_sets.empty or (n_sets_done >= n_sets)
-all_annotations_complete = task1_complete and task2_complete
+all_annotations_complete = task1_complete and counting_complete and task2_complete
+has_assigned_work = (n_units > 0) or (n_sets > 0)
+
+
+def _maybe_render_end_annotation_cta() -> None:
+    """Shown at bottom of Task 2 (after Save) when all work is done; not on thank-you page."""
+    if not (
+        has_assigned_work
+        and all_annotations_complete
+        and not st.session_state.get("show_completion_page", False)
+    ):
+        return
+    st.markdown("<div style='margin-top: 1.25rem;'></div>", unsafe_allow_html=True)
+    _, cta_mid, _ = st.columns([0.35, 5, 0.35])
+    with cta_mid:
+        st.markdown(
+            """
+            <div class="end-annotation-wrap">
+              <p class="end-annotation-title">✓ You have completed all assigned Task 1 and Task 2 items</p>
+              <p class="end-annotation-sub">Click <strong>End annotation</strong> below to confirm you are finished.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "End annotation",
+            type="primary",
+            use_container_width=True,
+            key="btn_end_annotation",
+        ):
+            st.session_state.show_completion_page = True
+            st.rerun()
+
+
+_sync_task_flow_phase(assigned_units, n_units, n_units_done)
+task_flow_phase = int(st.session_state.get("task_flow_phase", 1))
 
 # ── TOP BAR ───────────────────────────────────────────────────────────────────
 _t1_pct = min(100.0, (100.0 * n_units_done / n_units)) if n_units > 0 else 100.0
@@ -820,7 +1116,6 @@ with col_r:
 st.markdown("<div style='margin-bottom: 0.5rem;'></div>", unsafe_allow_html=True)
 
 # ── THANK-YOU PAGE (only after user clicks "End annotation") ────────────────
-has_assigned_work = (n_units > 0) or (n_sets > 0)
 if (
     has_assigned_work
     and all_annotations_complete
@@ -840,73 +1135,38 @@ if (
             """,
             unsafe_allow_html=True,
         )
-        if st.button("← Return to annotation interface", use_container_width=True, key="btn_return_annotation"):
+        if st.button("← Return to Task 2", use_container_width=True, key="btn_return_annotation"):
             st.session_state.show_completion_page = False
+            # Thank-you page is only shown when all work is done; always land on Task 2 (not Task 1 / Counting).
+            st.session_state.task_flow_phase = 3
+            if n_sets > 0:
+                st.session_state.sets_nav = n_sets - 1
             st.rerun()
     st.stop()
 
-# ── "End annotation" CTA (all work done, not yet on thank-you page) ──────────
-if (
-    has_assigned_work
-    and all_annotations_complete
-    and not st.session_state.get("show_completion_page", False)
-):
-    _, cta_mid, _ = st.columns([0.35, 5, 0.35])
-    with cta_mid:
-        st.markdown(
-            """
-            <div class="end-annotation-wrap">
-              <p class="end-annotation-title">✓ You have completed all assigned Task 1 and Task 2 items</p>
-              <p class="end-annotation-sub">Click <strong>End annotation</strong> below to confirm you are finished.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if st.button(
-            "End annotation",
-            type="primary",
-            use_container_width=True,
-            key="btn_end_annotation",
-        ):
-            st.session_state.show_completion_page = True
-            st.rerun()
-
-# ── TABS ──────────────────────────────────────────────────────────────────────
-tab1, tab2 = st.tabs([
-    "🔍  Task 1 — Evaluate Feedback Units",
-    "📋  Task 2 — Rank Feedback Sets",
-])
-
-# Auto-switch tabs when triggered (Task 1 last save → Tab 2; last Task 2 save with missing Task 1 → Tab 1)
-_tab_switch_index: int | None = None
-if st.session_state.get("switch_to_tab2"):
-    st.session_state.switch_to_tab2 = False
-    _tab_switch_index = 1
-elif st.session_state.get("switch_to_tab1"):
-    st.session_state.switch_to_tab1 = False
-    _tab_switch_index = 0
-if _tab_switch_index is not None:
-    import streamlit.components.v1 as components
-
-    components.html(
-        """
-    <script>
-    setTimeout(function() {
-        const tabs = window.parent.document.querySelectorAll('[data-baseweb="tab"]');
-        const i = %d;
-        if (tabs.length > i) tabs[i].click();
-    }, 200);
-    </script>
-    """
-        % _tab_switch_index,
-        height=0,
-    )
+# ── LINEAR TASK FLOW (no tabs; cannot return to earlier tasks) ────────────────
+_phase_label = {
+    1: "Task 1 — Evaluate Feedback Units",
+    2: "Counting Task",
+    3: "Task 2 — Rank Feedback Sets",
+}.get(task_flow_phase, f"Unknown ({task_flow_phase})")
+_phase_safe = html.escape(str(_phase_label))
+_step_box_mod = " current-step-wrap--phase1" if task_flow_phase == 1 else ""
+st.markdown(
+    f"""
+    <div class="current-step-wrap{_step_box_mod}">
+      <div class="current-step-line">{_phase_safe}</div>
+      <div class="current-step-oneway">Steps are one-way: after you advance, you cannot go back to a previous task.</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TASK 1 — UNIT ANNOTATION
 # ══════════════════════════════════════════════════════════════════════════════
-with tab1:
+if task_flow_phase == 1:
     if assigned_units.empty:
         st.info(f"No feedback units are assigned to **{annotator}** for Task 1.")
         st.stop()
@@ -981,6 +1241,9 @@ with tab1:
     st.markdown("""
     <div class="instructions-block">
     <span class="instructions-label">📌 Instructions:</span> Below is a piece of <strong>feedback on your paper</strong>. <strong>Evaluate</strong> it using the four sections that follow: <strong>validity</strong>, <strong>specificity</strong>, <strong>action</strong>, and <strong>helpfulness</strong>.
+    <p class="instructions-irreversible">
+    You can move between items within this task using the navigation controls. However, once you move to the next task, you cannot return to an earlier task.
+    </p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1129,7 +1392,7 @@ with tab1:
     can_save = can_save_basic and not details_needed
 
     is_last_unit = (nav2 == len(assigned_units) - 1)
-    btn_label = "💾 Save & Go to Task 2 →" if is_last_unit else "💾 Save & Next →"
+    btn_label = "💾 Save & Next →"
 
     bc1, _ = st.columns([2, 8])
     with bc1:
@@ -1162,8 +1425,8 @@ with tab1:
             # Only leave this unit after a successful persist (or non-error local path); stay here on sheet errors so the toast is visible.
             if ok or err is None:
                 if is_last_unit:
-                    st.session_state.sets_nav = 0
-                    st.session_state.switch_to_tab2 = True
+                    # Do not auto-switch tabs; user moves with explicit button after Task 1 completion.
+                    st.session_state.units_nav = nav2
                 else:
                     st.session_state.units_nav = nav2 + 1
             st.rerun()
@@ -1174,13 +1437,149 @@ with tab1:
         else:
             st.caption("⚠️ Complete all sections (validity, specificity, action, helpfulness) to enable saving.")
 
+    if task1_complete and not assigned_units.empty:
+        st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
+        st.markdown(
+            """
+            <p class="instructions-irreversible">
+            Once you go to the next task, you cannot return to Task 1. Make sure you are finished before continuing.
+            </p>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.success("Task 1 is complete. Click below to continue to the next task.")
+        c_next_task_btn, _ = st.columns([2.5, 4.5])
+        with c_next_task_btn:
+            if st.button("Go to next task →", type="primary", key="go_to_next_task_from_task1", use_container_width=True):
+                st.session_state.sets_nav = 0
+                st.session_state.task_flow_phase = 2
+                st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COUNTING TASK
+# ══════════════════════════════════════════════════════════════════════════════
+elif task_flow_phase == 2:
+    start_num = int(st.session_state.get("distractor_start_num", random.randint(100, 500)))
+    step_num = int(st.session_state.get("distractor_step_num", random.choice([3, 4])))
+    expected_answers = _expected_counting_answers(start_num, step_num)
+    st.markdown(
+        f"""
+        <div class="instructions-block">
+        <span class="instructions-label">📌 Instructions:</span>
+        Write down five numbers starting from <strong>{start_num}</strong> counting backward by <strong>{step_num}</strong>.
+        <p class="instructions-irreversible">
+        After you continue to Task 2, you cannot return to Task 1 or this step.
+        </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    input_cols = st.columns(5)
+    answer_inputs: list[str] = []
+    for idx, col in enumerate(input_cols):
+        key = f"counting_answer_{idx}"
+        if key not in st.session_state:
+            st.session_state[key] = st.session_state.counting_answers[idx]
+        with col:
+            value = st.text_input(
+                f"Number {idx + 1}",
+                key=key
+            ).strip()
+            answer_inputs.append(value)
+
+    st.session_state.counting_answers = answer_inputs
+    all_filled = all(v != "" for v in answer_inputs)
+    c_mid_btn, c_mid_msg = st.columns([2, 6])
+    with c_mid_btn:
+        st.markdown(
+            """
+            <p class="instructions-irreversible" style="margin-bottom:0.5rem;">
+            Continuing to Task 2 is one-way: you will not be able to go back to earlier tasks.
+            </p>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "Continue to Task 2 →",
+            type="primary",
+            key="go_task2_from_distractor",
+            disabled=not all_filled,
+        ):
+            parsed_answers: list[int] = []
+            bad_idx = -1
+            for idx, raw in enumerate(answer_inputs):
+                if not re.fullmatch(r"-?\d+", raw):
+                    bad_idx = idx
+                    break
+                parsed_answers.append(int(raw))
+
+            if bad_idx >= 0:
+                st.session_state.last_save_toast = {
+                    "ok": False,
+                    "msg": f"❌ Number {bad_idx + 1} must be an integer.",
+                    "task": "counting",
+                }
+                st.rerun()
+
+            is_correct = parsed_answers == expected_answers
+            completed_at = datetime.now(timezone.utc).isoformat()
+            st.session_state.counting_is_correct = is_correct
+            st.session_state.counting_completed_at = completed_at
+
+            counting_paper_id = "__counting_task__"
+            if not assigned_sets.empty:
+                nav_counting = min(st.session_state.sets_nav, len(assigned_sets) - 1)
+                counting_paper_id = str(assigned_sets.iloc[nav_counting]["paper_id"])
+
+            existing_rank = st.session_state.rankings.get(counting_paper_id, [])
+            counting_payload = {
+                "start_num": start_num,
+                "step_num": step_num,
+                "answers": parsed_answers,
+                "is_correct": is_correct,
+                "completed_at": completed_at,
+            }
+            ok, err = save_ranking(
+                annotator,
+                counting_paper_id,
+                existing_rank,
+                counting_payload=counting_payload,
+            )
+            if not ok:
+                st.session_state.last_save_toast = {
+                    "ok": False,
+                    "msg": f"❌ Counting task save failed: {err}",
+                    "task": "counting",
+                }
+                st.rerun()
+
+            st.session_state.last_save_toast = {
+                "ok": True,
+                "msg": "✅ Counting task recorded.",
+                "task": "counting",
+            }
+            st.session_state.task_flow_phase = 3
+            st.rerun()
+    with c_mid_msg:
+        if not all_filled:
+            st.caption("⚠️ Fill in all five numbers to continue.")
+        toast = st.session_state.get("last_save_toast")
+        if toast and toast.get("task") == "counting":
+            if toast["ok"] is True:
+                st.success(toast["msg"])
+            else:
+                st.error(toast["msg"])
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TASK 2 — RANKING
 # ══════════════════════════════════════════════════════════════════════════════
-with tab2:
+elif task_flow_phase == 3:
     if assigned_sets.empty:
         st.info(f"No papers are assigned to **{annotator}** for Task 2.")
+        _maybe_render_end_annotation_cta()
         st.stop()
 
     nav1 = min(st.session_state.sets_nav, len(assigned_sets) - 1)
@@ -1230,6 +1629,10 @@ with tab2:
     <span class="instructions-label">📌 Instructions:</span>Read all feedback sets below (Sets A, B, and C), then <strong>rank them according to four criteria</strong>: <strong>validity</strong> (is the feedback a valid 
 issue/question/suggestion?), <strong>specificity</strong> (is it anchored to specific parts of the 
 paper?), <strong>actionability</strong> (can the authors clearly act on it?), and <strong>helpfulness</strong> (how useful is it overall to the authors?). Each set letter must be used exactly once.
+    <p class="instructions-irreversible">
+    You can move between papers within Task 2 using the navigation controls. You cannot return to Task 1 or the counting step after you have advanced.
+    </p>
+    </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
@@ -1328,7 +1731,34 @@ paper?), <strong>actionability</strong> (can the authors clearly act on it?), an
         ):
             sorted_models = [label_to_model[lb] for lb in labels_in_order]
             st.session_state.rankings[paper_id1] = sorted_models
-            ok, err = save_ranking(annotator, paper_id1, sorted_models)
+            counting_payload = None
+            if st.session_state.get("counting_completed_at"):
+                raw_answers = st.session_state.get("counting_answers", [])
+                if len(raw_answers) != 5:
+                    st.session_state.last_save_toast = {
+                        "ok": False,
+                        "msg": "❌ Counting task state is invalid: expected exactly five answers.",
+                        "task": "ranking",
+                    }
+                    st.rerun()
+
+                if not all(re.fullmatch(r"-?\d+", str(v)) for v in raw_answers):
+                    st.session_state.last_save_toast = {
+                        "ok": False,
+                        "msg": "❌ Counting task state is invalid: all five answers must be integers.",
+                        "task": "ranking",
+                    }
+                    st.rerun()
+
+                counting_payload = {
+                    "start_num": int(st.session_state.get("distractor_start_num")),
+                    "step_num": int(st.session_state.get("distractor_step_num")),
+                    "answers": [int(v) for v in raw_answers],
+                    "is_correct": bool(st.session_state.get("counting_is_correct")),
+                    "completed_at": st.session_state.get("counting_completed_at"),
+                }
+
+            ok, err = save_ranking(annotator, paper_id1, sorted_models, counting_payload=counting_payload)
             if ok:
                 st.session_state.last_save_toast = {"ok": True, "msg": "✅ Ranking saved to Google Sheets!", "task": "ranking"}
             elif err:
@@ -1338,11 +1768,6 @@ paper?), <strong>actionability</strong> (can the authors clearly act on it?), an
             
             if not is_last_paper:
                 st.session_state.sets_nav = nav1 + 1
-            else:
-                u_pos = _first_unannotated_unit_pos(assigned_units)
-                if u_pos is not None:
-                    st.session_state.units_nav = u_pos
-                    st.session_state.switch_to_tab1 = True
             st.rerun()
 
     # ── Persistent save status banner ─────────────────────────────────────────
@@ -1361,3 +1786,10 @@ paper?), <strong>actionability</strong> (can the authors clearly act on it?), an
         saved = st.session_state.rankings[paper_id1]
         summary = " → ".join([f"**Set {model_to_label.get(m, m)}**" for m in saved])
         st.markdown(f"**Saved ranking (best → worst):** {summary}")
+
+    _maybe_render_end_annotation_cta()
+
+else:
+    st.error(
+        f"Invalid task flow state (phase={task_flow_phase}). Please refresh the page or use Change name to restart."
+    )
