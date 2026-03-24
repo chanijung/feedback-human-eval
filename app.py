@@ -4,7 +4,6 @@ import logging
 import hashlib
 import random
 import re
-from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -824,35 +823,15 @@ def _shuffled_models(annotator: str, models: list[str]) -> list[str]:
     return [models[i] for i in order]
 
 
-def _interleave_task1_units(df: pd.DataFrame, annotator: str) -> pd.DataFrame:
-    """Reorder Task 1 units so the same feedback_source rarely appears back-to-back.
-
-    Uses round-robin across sources; order within each source stays as in the CSV.
-    Source bucket order is shuffled deterministically per annotator (not fully random).
-    """
-    if df.empty or "feedback_source" not in df.columns:
+def _shuffle_task1_units(df: pd.DataFrame, annotator: str) -> pd.DataFrame:
+    """Shuffle Task 1 unit rows with a deterministic seed per annotator (stable across refreshes)."""
+    if df.empty:
         return df.reset_index(drop=True)
-
-    buckets: dict[str, deque[int]] = defaultdict(deque)
-    first_seen: list[str] = []
-    for i in range(len(df)):
-        src = str(df.iloc[i].get("feedback_source", "") or "").strip() or "__unknown__"
-        if src not in buckets:
-            first_seen.append(src)
-        buckets[src].append(i)
-
     seed = int(hashlib.md5(f"task1_units::{annotator.lower()}".encode()).hexdigest(), 16) % (2 ** 32)
     rng = random.Random(seed)
-    source_order = list(first_seen)
-    rng.shuffle(source_order)
-
-    out_idx: list[int] = []
-    while any(buckets[s] for s in source_order):
-        for s in source_order:
-            if buckets[s]:
-                out_idx.append(buckets[s].popleft())
-
-    return df.iloc[out_idx].reset_index(drop=True)
+    order = list(range(len(df)))
+    rng.shuffle(order)
+    return df.iloc[order].reset_index(drop=True)
 
 
 def _format_feedback_text(text: str) -> str:
@@ -1124,7 +1103,7 @@ df_units = _load_units(_UNITS_PATH.stat().st_mtime if _UNITS_PATH.exists() else 
 
 assigned_sets = _get_assigned(df_sets, annotator)
 assigned_units = _get_assigned(df_units, annotator)
-assigned_units = _interleave_task1_units(assigned_units, annotator)
+assigned_units = _shuffle_task1_units(assigned_units, annotator)
 
 if annotator and assigned_sets.empty and assigned_units.empty:
     _, mid_bad, _ = st.columns([1, 2, 1])
@@ -1164,6 +1143,14 @@ n_units_done = sum(
     if (str(r["paper_id"]), str(r["feedback_source"]), str(r["feedback_unit"]).strip())
        in st.session_state.unit_annots
 )
+
+# Rankings sheet rows can carry distractor_* from a prior session. If Task 1 is not
+# finished yet, that restored state must not make _sync_task_flow_phase jump to Task 2
+# (skipping the counting step) right after the final unit save.
+if n_units > 0 and n_units_done < n_units and bool(st.session_state.get("counting_completed_at")):
+    st.session_state.counting_completed_at = ""
+    st.session_state.counting_is_correct = None
+    st.session_state.counting_answers = ["", "", "", "", ""]
 
 if st.session_state.pop("_should_resume_nav", False):
     apply_resume_navigation_after_sheet_load(
@@ -1319,7 +1306,7 @@ st.markdown(
     f"""
     <div class="current-step-wrap">
       <div class="current-step-line">{_phase_safe}</div>
-      <div class="current-step-oneway">Steps are one-way: after you advance, you cannot go back to a previous task.</div>
+      <div class="current-step-oneway">You cannot proceed to next task until this task is complete</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1384,6 +1371,12 @@ if task_flow_phase == 1:
             if _task1_persist_if_complete(annotator, nav2, assigned_units):
                 st.session_state.units_nav = nav2 + 1
                 st.rerun()
+
+    if nav2 == len(assigned_units) - 1:
+        st.info(
+            "You are on the **last** unit. **Next** does not go to the next task. "
+            "Use **Save & Next** below to save. When Task 1 is complete, use **Go to next task** to continue."
+        )
 
     # Jump to first unannotated (left aligned or in a separate row)
     c_jump, _ = st.columns([2.5, 4.5])
@@ -1790,6 +1783,12 @@ elif task_flow_phase == 3:
             if _task2_persist_ranking_if_complete(annotator, paper_id1, label_to_model, lbls):
                 st.session_state.sets_nav = nav1 + 1
                 st.rerun()
+
+    if nav1 == len(assigned_sets) - 1:
+        st.info(
+            "You are on the **last** paper. **Next** does not go to the next task. "
+            "Use **Save & Next** below to save your ranking and finish this step."
+        )
 
     st.markdown("---")
 
