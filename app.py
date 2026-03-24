@@ -1175,7 +1175,7 @@ def _maybe_render_end_annotation_banner_only(end_only_ui: bool = False) -> None:
     sub = (
         "Click <strong>End annotation</strong> below to confirm you are finished."
         if end_only_ui
-        else "Click <strong>End annotation</strong> next to <strong>Save &amp; Next</strong> to confirm you are finished."
+        else "Click <strong>End annotation</strong> to confirm you are finished."
     )
     st.markdown("<div style='margin-top: 1.25rem;'></div>", unsafe_allow_html=True)
     _, cta_mid, _ = st.columns([1, 3, 1], gap="small")
