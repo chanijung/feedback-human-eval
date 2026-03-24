@@ -884,11 +884,12 @@ _TASK1_ACTION_OPTIONS: list[str] = [
 _TASK1_ACTION_DESCRIPTIONS: dict[str, str] = {
     "Will revise": "Make a concrete change to the manuscript.",
     "Defer to future work": "Acknowledge but defer (future work/out of scope).",
-    "Point to existing content": "Already addresses this; point to section/table.",
-    "Accept with no revision": "Valid but make no change/no deferral.",
+    "Point to existing content": "The paper already addresses this; point to the relevant section",
+    "Accept with no revision": "Valid but make no change/no deferral to future work.",
     "Contest with no revision": "Dispute or reject and make no change.",
     _TASK1_ACTION_REQUIRES_DETAILS: "No action for another reason (please specify in Details below).",
 }
+
 # Older sessions stored snake_case; map so existing rows still select the right option.
 _TASK1_ACTION_LEGACY: dict[str, str] = {
     "will_revise": "Will revise",
