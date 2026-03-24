@@ -871,6 +871,42 @@ def _sync_task_flow_phase(assigned_units: pd.DataFrame, n_units: int, n_units_do
 
 _SET_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H"]
 
+# Task 1 — action radio values persisted to Sheets (human-readable labels).
+_TASK1_ACTION_REQUIRES_DETAILS = "No action (other reason)"
+_TASK1_ACTION_OPTIONS: list[str] = [
+    "Will revise",
+    "Defer to future work",
+    "Point to existing content",
+    "Accept with no revision",
+    "Contest with no revision",
+    _TASK1_ACTION_REQUIRES_DETAILS,
+]
+_TASK1_ACTION_DESCRIPTIONS: dict[str, str] = {
+    "Will revise": "Make a concrete change to the manuscript.",
+    "Defer to future work": "Acknowledge but defer (future work/out of scope).",
+    "Point to existing content": "Already addresses this; point to section/table.",
+    "Accept with no revision": "Valid but make no change/no deferral.",
+    "Contest with no revision": "Dispute or reject and make no change.",
+    _TASK1_ACTION_REQUIRES_DETAILS: "No action for another reason (please specify in Details below).",
+}
+# Older sessions stored snake_case; map so existing rows still select the right option.
+_TASK1_ACTION_LEGACY: dict[str, str] = {
+    "will_revise": "Will revise",
+    "defer_future_work": "Defer to future work",
+    "point_to_existing_content": "Point to existing content",
+    "no_revision_accept": "Accept with no revision",
+    "no_revision_contest": "Contest with no revision",
+    "no_action_other": _TASK1_ACTION_REQUIRES_DETAILS,
+}
+
+
+def _task1_normalize_action(action: str | None) -> str | None:
+    if action is None or not isinstance(action, str):
+        return action
+    if action in _TASK1_ACTION_DESCRIPTIONS:
+        return action
+    return _TASK1_ACTION_LEGACY.get(action, action)
+
 
 def _task1_read_unit_form_from_session(nav_idx: int) -> tuple[dict | None, bool]:
     """Read Task 1 widgets from session_state (nav row is above widgets; use keys for nav_idx)."""
@@ -884,7 +920,7 @@ def _task1_read_unit_form_from_session(nav_idx: int) -> tuple[dict | None, bool]
     can_save_basic = (
         validity is not None and specificity is not None and action is not None and helpfulness is not None
     )
-    details_needed = action == "no_action_other" and not details.strip()
+    details_needed = action == _TASK1_ACTION_REQUIRES_DETAILS and not details.strip()
     can_save = can_save_basic and not details_needed
     if not can_save:
         return None, False
@@ -1257,7 +1293,7 @@ with col_bar:
     </div>
     """, unsafe_allow_html=True)
 with col_r:
-    if st.button("Change name", use_container_width=True):
+    if st.button("Sign out", use_container_width=True):
         _clear_user_state()
         st.session_state.annotator = ""
         st.query_params.pop("annotator", None)
@@ -1471,30 +1507,16 @@ if task_flow_phase == 1:
         st.markdown("##### 3. Action")
         st.caption("What action are you willing to take?")
 
-        _action_opts = [
-            "will_revise",
-            "defer_future_work",
-            "point_to_existing_content",
-            "no_revision_accept",
-            "no_revision_contest",
-            "no_action_other",
-        ]
-        _action_desc = {
-            "will_revise": "Make a concrete change to the manuscript.",
-            "defer_future_work": "Acknowledge but defer (future work/out of scope).",
-            "point_to_existing_content": "Already addresses this; point to section/table.",
-            "no_revision_accept": "Valid but make no change/no deferral.",
-            "no_revision_contest": "Dispute or reject and make no change.",
-            "no_action_other": "No action for another reason (please specify in Details below).",
-        }
-        _cur_action = existing2.get("action")
-        _action_idx = _action_opts.index(_cur_action) if _cur_action in _action_opts else None
+        _cur_action = _task1_normalize_action(existing2.get("action"))
+        _action_idx = (
+            _TASK1_ACTION_OPTIONS.index(_cur_action) if _cur_action in _TASK1_ACTION_OPTIONS else None
+        )
 
         action = st.radio(
             "Action",
-            options=_action_opts,
+            options=_TASK1_ACTION_OPTIONS,
             index=_action_idx,
-            format_func=lambda x: f"{x}  —  {_action_desc[x]}",
+            format_func=lambda x: f"{x}  —  {_TASK1_ACTION_DESCRIPTIONS[x]}",
             label_visibility="collapsed",
             key=f"action_{nav2}",
         )
@@ -1502,7 +1524,7 @@ if task_flow_phase == 1:
         details = st.text_area(
             "Details",
             value=existing2.get("details", ""),
-            placeholder="Short description of the action or reason for no action (required for 'another reason')",
+            placeholder="Short description of the action or reason for no action (required for 'No action (other reason)').",
             height=80,
             key=f"details_{nav2}",
             label_visibility="visible",
@@ -1547,7 +1569,7 @@ if task_flow_phase == 1:
 
     # ── Save & Next (primary action) ───────────────────────────────────────────
     can_save_basic = validity is not None and specificity is not None and action is not None and helpfulness is not None
-    details_needed = action == "no_action_other" and not details.strip()
+    details_needed = action == _TASK1_ACTION_REQUIRES_DETAILS and not details.strip()
     can_save = can_save_basic and not details_needed
 
     is_last_unit = (nav2 == len(assigned_units) - 1)
@@ -1616,7 +1638,9 @@ if task_flow_phase == 1:
 
     if not can_save:
         if details_needed:
-            st.warning("⚠️ Please provide reason in 'Details' for selecting 'no_action_other'.")
+            st.warning(
+                f"⚠️ Please provide reason in 'Details' when selecting '{_TASK1_ACTION_REQUIRES_DETAILS}'."
+            )
         else:
             st.caption("⚠️ Complete all sections (validity, specificity, action, helpfulness) to enable saving.")
 
@@ -1995,5 +2019,5 @@ paper?), <strong>actionability</strong> (can the authors clearly act on it?), an
 
 else:
     st.error(
-        f"Invalid task flow state (phase={task_flow_phase}). Please refresh the page or use Change name to restart."
+        f"Invalid task flow state (phase={task_flow_phase}). Please refresh the page or use Sign out to restart."
     )
