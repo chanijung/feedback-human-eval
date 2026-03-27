@@ -835,10 +835,15 @@ def _shuffle_task1_units(df: pd.DataFrame, annotator: str) -> pd.DataFrame:
 
 
 def _format_feedback_text(text: str) -> str:
-    """Render plain feedback text as safe HTML with explicit line spacing."""
+    """Render feedback as safe HTML: escape first, then **bold**, then one line per div.
+
+    Markdown-style **double asterisks** become <strong> after escaping, so user HTML
+    cannot be injected; only explicit **...** pairs are styled.
+    """
     safe = html.escape(text).strip()
     if not safe:
         return ""
+    safe = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe, flags=re.DOTALL)
     lines = safe.split("\n")
     return "".join(
         f"<div class='fb-line'>{line if line.strip() else '&nbsp;'}</div>"
@@ -1412,7 +1417,7 @@ if task_flow_phase == 1:
     if nav2 == len(assigned_units) - 1:
         st.info(
             "You are on the **last** unit. **Next** does not go to the next task. "
-            "Use **Save & Next** below to save. When Task 1 is complete, use **Go to next task** to continue."
+            "Use **Save & Next** at the bottom of the page to save. When Task 1 is complete, use **Go to next task** to continue."
         )
 
     # Jump to first unannotated (left aligned or in a separate row)
@@ -1447,7 +1452,7 @@ if task_flow_phase == 1:
 
     st.markdown(f"""
     <div class="unit-card">
-      <div class="unit-text">{html.escape(unit_text2)}</div>
+      <div class="unit-text">{_format_feedback_text(unit_text2)}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1812,7 +1817,7 @@ elif task_flow_phase == 3:
     if nav1 == len(assigned_sets) - 1:
         st.info(
             "You are on the **last** paper. **Next** does not go to the next task. "
-            "Use **Save & Next** below to save your ranking and finish this step."
+            "Use **Save & Next** at the bottom of the page to save your ranking and finish this step."
         )
 
     st.markdown("---")
